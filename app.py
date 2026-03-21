@@ -1,10 +1,11 @@
 import os
 import math
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Dict, List, Optional
 
 import pandas as pd
 import streamlit as st
+from streamlit_cookies_manager import EncryptedCookieManager
 
 try:
     import gspread
@@ -19,6 +20,10 @@ BRAND_BG = "#EFE7DD"
 BRAND_BLUE = "#0E2A47"
 BRAND_BORDER = "rgba(14,42,71,0.14)"
 DEFAULT_SPREADSHEET_ID = "19CH28p4VI4iFv9mRPnRPBMW1MHTqdW0-ZQhghC2_nrk"
+
+COOKIE_PASSWORD = "yvora_requisicoes_cookie_2026"
+COOKIE_NAME_USER = "yv_user_login"
+COOKIE_NAME_EXP = "yv_user_exp"
 
 REQUIRED_SHEETS = [
     "itens",
@@ -110,11 +115,33 @@ def fmt_date(dt: datetime) -> str:
     return dt.strftime("%d/%m/%Y")
 
 
+def combine_date_time(date_obj, time_obj) -> str:
+    return f"{date_obj.strftime('%d/%m/%Y')} {time_obj.strftime('%H:%M')}"
+
+
 def parse_date_br(text: str) -> Optional[datetime]:
-    try:
-        return datetime.strptime(str(text), "%d/%m/%Y")
-    except Exception:
+    value = str(text).strip()
+    if not value:
         return None
+
+    formats = [
+        "%d/%m/%Y %H:%M",
+        "%d/%m/%Y %H:%M:%S",
+        "%d/%m/%Y",
+    ]
+    for fmt in formats:
+        try:
+            return datetime.strptime(value, fmt)
+        except Exception:
+            pass
+    return None
+
+
+def only_date_str(text: str) -> str:
+    dt = parse_date_br(text)
+    if dt is None:
+        return ""
+    return dt.strftime("%d/%m/%Y")
 
 
 def safe_str(x) -> str:
@@ -123,6 +150,18 @@ def safe_str(x) -> str:
     if isinstance(x, float) and math.isnan(x):
         return ""
     return str(x).strip()
+
+
+def show_flash() -> None:
+    flash = st.session_state.pop("flash_message", None)
+    flash_type = st.session_state.pop("flash_type", "success")
+    if flash:
+        if flash_type == "success":
+            st.success(flash)
+        elif flash_type == "warning":
+            st.warning(flash)
+        else:
+            st.error(flash)
 
 
 def inject_css() -> None:
@@ -263,7 +302,8 @@ def inject_css() -> None:
             border-radius: 14px !important;
         }}
         div[data-baseweb="select"] > div,
-        .stDateInput > div > div {{
+        .stDateInput > div > div,
+        .stTimeInput > div > div {{
             border-radius: 14px !important;
         }}
         .unit-box {{
@@ -350,6 +390,49 @@ def kpi_box(label: str, value: str) -> None:
         f"<div class='kpi'><div class='kpi-label'>{label}</div><div class='kpi-value'>{value}</div></div>",
         unsafe_allow_html=True,
     )
+
+
+def save_login_cookie(cookies, user: Dict) -> None:
+    exp = datetime.now() + timedelta(hours=48)
+    cookies[COOKIE_NAME_USER] = user.get("usuario", "")
+    cookies[COOKIE_NAME_EXP] = exp.isoformat()
+    cookies.save()
+
+
+def clear_login_cookie(cookies) -> None:
+    if COOKIE_NAME_USER in cookies:
+        del cookies[COOKIE_NAME_USER]
+    if COOKIE_NAME_EXP in cookies:
+        del cookies[COOKIE_NAME_EXP]
+    cookies.save()
+
+
+def try_restore_login_from_cookie(cookies, users_df: pd.DataFrame) -> Optional[Dict]:
+    usuario = cookies.get(COOKIE_NAME_USER)
+    exp_str = cookies.get(COOKIE_NAME_EXP)
+
+    if not usuario or not exp_str:
+        return None
+
+    try:
+        exp = datetime.fromisoformat(exp_str)
+    except Exception:
+        return None
+
+    if datetime.now() > exp:
+        clear_login_cookie(cookies)
+        return None
+
+    match = users_df[
+        users_df["usuario"].astype(str).str.strip() == str(usuario).strip()
+    ]
+    if match.empty:
+        clear_login_cookie(cookies)
+        return None
+
+    row = match.iloc[0].to_dict()
+    row["profiles"] = parse_profiles(row.get("perfil", ""))
+    return row
 
 
 @st.cache_resource(show_spinner=False)
@@ -534,12 +617,15 @@ def mobile_menu_label(name: str) -> str:
 def delivery_flag(r: pd.Series) -> str:
     if safe_str(r.get("status")) != "COMPRADO":
         return ""
+
     prev = parse_date_br(r.get("previsao_entrega"))
     if not prev:
         return ""
+
     today = parse_date_br(fmt_date(now_br()))
     if today is None:
         return ""
+
     if prev.date() < today.date():
         return "overdue"
     if prev.date() == today.date():
@@ -572,6 +658,7 @@ def request_card(r: pd.Series, hint: str = "") -> None:
                 Quantidade: <b>{qty} {safe_str(r["unidade"])}</b><br>
                 Solicitante: {safe_str(r["nome_solicitante"])} | Setor: {safe_str(r["setor"])}<br>
                 Fornecedor: {forn}<br>
+                Compra: {safe_str(r["data_compra"]) or "-"}<br>
                 Previsão: {safe_str(r["previsao_entrega"]) or "-"} | Recebimento: {safe_str(r["data_recebimento"]) or "-"}
             </div>
             {f"<div class='yv-mini' style='margin-top:8px;'>{hint}</div>" if hint else ""}
@@ -617,6 +704,7 @@ def render_new_request(
     sh, itens_df: pd.DataFrame, req_df: pd.DataFrame, user: Dict
 ) -> None:
     st.subheader("Nova requisição")
+    show_flash()
 
     search = st.text_input("Buscar item", placeholder="Nome, código ou categoria")
     tmp = itens_df.copy()
@@ -707,6 +795,7 @@ def render_new_request(
                 fmt_dt(now),
             ],
         )
+
         write_log(
             sh,
             user["usuario"],
@@ -716,13 +805,49 @@ def render_new_request(
             "PENDENTE_APROVACAO",
             justificativa,
         )
+
         clear_caches()
-        st.success(f"Solicitação {req_id} enviada com sucesso.")
+        st.session_state["flash_message"] = f"Solicitação {req_id} enviada com sucesso."
+        st.session_state["flash_type"] = "success"
         st.rerun()
 
 
-def render_my_requests(req_df: pd.DataFrame, user: Dict) -> None:
+def cancel_my_request(sh, req_id: str, user: Dict) -> None:
+    row_n = find_row_number_by_id(sh, "requisicoes", "id_requisicao", req_id)
+    if row_n is None:
+        st.error("Solicitação não encontrada.")
+        return
+
+    now = now_br()
+    update_row_by_number(
+        sh,
+        "requisicoes",
+        row_n,
+        REQ_COLS,
+        {
+            "status": "CANCELADO",
+            "ultima_atualizacao": fmt_dt(now),
+        },
+    )
+    write_log(
+        sh,
+        user["usuario"],
+        req_id,
+        "cancelar_solicitacao",
+        "PENDENTE_APROVACAO",
+        "CANCELADO",
+        "Cancelado pelo solicitante",
+    )
+    clear_caches()
+    st.session_state["flash_message"] = f"Solicitação {req_id} cancelada com sucesso."
+    st.session_state["flash_type"] = "warning"
+    st.rerun()
+
+
+def render_my_requests(sh, req_df: pd.DataFrame, user: Dict) -> None:
     st.subheader("Minhas requisições")
+    show_flash()
+
     df = req_df[req_df["solicitante"].astype(str) == user["usuario"]].copy()
 
     c1, c2 = st.columns(2)
@@ -743,6 +868,13 @@ def render_my_requests(req_df: pd.DataFrame, user: Dict) -> None:
 
     for _, r in df.iloc[::-1].iterrows():
         request_card(r)
+        if safe_str(r["status"]) == "PENDENTE_APROVACAO":
+            if st.button(
+                f"Excluir solicitação {safe_str(r['id_requisicao'])}",
+                key=f"cancel_{safe_str(r['id_requisicao'])}",
+                use_container_width=True,
+            ):
+                cancel_my_request(sh=sh, req_id=safe_str(r["id_requisicao"]), user=user)
 
 
 def render_approvals(sh, req_df: pd.DataFrame, user: Dict) -> None:
@@ -751,6 +883,8 @@ def render_approvals(sh, req_df: pd.DataFrame, user: Dict) -> None:
         return
 
     st.subheader("Aprovações")
+    show_flash()
+
     df = req_df[req_df["status"] == "PENDENTE_APROVACAO"].copy()
     if df.empty:
         st.success("Não há itens pendentes de aprovação.")
@@ -823,7 +957,8 @@ def render_approvals(sh, req_df: pd.DataFrame, user: Dict) -> None:
                 obs,
             )
             clear_caches()
-            st.success("Requisição aprovada.")
+            st.session_state["flash_message"] = "Requisição aprovada."
+            st.session_state["flash_type"] = "success"
             st.rerun()
 
         if b2.button(
@@ -866,7 +1001,8 @@ def render_approvals(sh, req_df: pd.DataFrame, user: Dict) -> None:
                 obs,
             )
             clear_caches()
-            st.warning("Requisição reprovada.")
+            st.session_state["flash_message"] = "Requisição reprovada."
+            st.session_state["flash_type"] = "warning"
             st.rerun()
 
         st.divider()
@@ -878,6 +1014,8 @@ def render_buying(sh, req_df: pd.DataFrame, user: Dict) -> None:
         return
 
     st.subheader("Compras")
+    show_flash()
+
     df = req_df[req_df["status"] == "APROVADO"].copy()
     if df.empty:
         st.success("Não há requisições aprovadas aguardando compra.")
@@ -903,9 +1041,15 @@ def render_buying(sh, req_df: pd.DataFrame, user: Dict) -> None:
             value=safe_str(r["fornecedor_sugerido"]),
             key=f"buy_forn_{r['id_requisicao']}",
         )
+
         c1, c2 = st.columns(2)
         data_compra = c1.date_input("Data da compra", key=f"buy_dt_{r['id_requisicao']}")
-        prev = c2.date_input("Previsão de entrega", key=f"buy_prev_{r['id_requisicao']}")
+        hora_compra = c2.time_input("Hora da compra", key=f"buy_tm_{r['id_requisicao']}")
+
+        c3, c4 = st.columns(2)
+        prev_data = c3.date_input("Previsão de entrega", key=f"buy_prev_dt_{r['id_requisicao']}")
+        prev_hora = c4.time_input("Hora prevista de entrega", key=f"buy_prev_tm_{r['id_requisicao']}")
+
         obs = st.text_input("Obs. compras", key=f"buy_obs_{r['id_requisicao']}")
 
         if st.button(
@@ -931,8 +1075,8 @@ def render_buying(sh, req_df: pd.DataFrame, user: Dict) -> None:
                     "status": "COMPRADO",
                     "comprador": user["usuario"],
                     "fornecedor_final": forn_final,
-                    "data_compra": data_compra.strftime("%d/%m/%Y"),
-                    "previsao_entrega": prev.strftime("%d/%m/%Y"),
+                    "data_compra": combine_date_time(data_compra, hora_compra),
+                    "previsao_entrega": combine_date_time(prev_data, prev_hora),
                     "observacao_compras": obs,
                     "ultima_atualizacao": fmt_dt(now),
                 },
@@ -947,7 +1091,8 @@ def render_buying(sh, req_df: pd.DataFrame, user: Dict) -> None:
                 obs,
             )
             clear_caches()
-            st.success("Compra registrada.")
+            st.session_state["flash_message"] = "Compra registrada com sucesso."
+            st.session_state["flash_type"] = "success"
             st.rerun()
 
         st.divider()
@@ -959,6 +1104,8 @@ def render_receiving(sh, req_df: pd.DataFrame, user: Dict) -> None:
         return
 
     st.subheader("Recebimento")
+    show_flash()
+
     df = req_df[req_df["status"] == "COMPRADO"].copy()
     if df.empty:
         st.success("Não há itens aguardando recebimento.")
@@ -969,7 +1116,8 @@ def render_receiving(sh, req_df: pd.DataFrame, user: Dict) -> None:
     busca = c2.text_input("Buscar item ou fornecedor")
 
     if filtro == "Previstos hoje":
-        df = df[df["previsao_entrega"].astype(str) == fmt_date(now_br())]
+        hoje = fmt_date(now_br())
+        df = df[df["previsao_entrega"].astype(str).apply(only_date_str) == hoje]
     elif filtro == "Atrasados":
         rows = [r for _, r in df.iterrows() if delivery_flag(r) == "overdue"]
         df = pd.DataFrame(rows, columns=df.columns) if rows else pd.DataFrame(columns=df.columns)
@@ -1045,7 +1193,8 @@ def render_receiving(sh, req_df: pd.DataFrame, user: Dict) -> None:
                 obs,
             )
             clear_caches()
-            st.success("Recebimento confirmado.")
+            st.session_state["flash_message"] = "Recebimento confirmado com sucesso."
+            st.session_state["flash_type"] = "success"
             st.rerun()
 
         st.divider()
@@ -1053,6 +1202,8 @@ def render_receiving(sh, req_df: pd.DataFrame, user: Dict) -> None:
 
 def render_panel(req_df: pd.DataFrame, user: Dict) -> None:
     st.subheader("Acompanhamento geral")
+    show_flash()
+
     df = req_df.copy()
 
     overdue = sum(1 for _, r in df.iterrows() if delivery_flag(r) == "overdue")
@@ -1176,7 +1327,7 @@ def render_admin(
         )
 
 
-def login_screen(users_df: pd.DataFrame) -> None:
+def login_screen(users_df: pd.DataFrame, cookies) -> None:
     st.markdown("<div class='login-wrap'>", unsafe_allow_html=True)
     st.subheader("Acesso")
     with st.form("login"):
@@ -1190,20 +1341,32 @@ def login_screen(users_df: pd.DataFrame) -> None:
             st.error("Usuário ou senha inválidos.")
         else:
             st.session_state["yv_user"] = user
-            st.success("Login realizado com sucesso.")
+            save_login_cookie(cookies, user)
+            st.session_state["flash_message"] = "Login realizado com sucesso."
+            st.session_state["flash_type"] = "success"
             st.rerun()
+
     st.markdown("</div>", unsafe_allow_html=True)
 
 
-def logout_button() -> None:
+def logout_button(cookies) -> None:
     if st.sidebar.button("Sair", use_container_width=True):
         st.session_state.pop("yv_user", None)
+        clear_login_cookie(cookies)
         st.rerun()
 
 
 def main() -> None:
     st.set_page_config(page_title=APP_TITLE, page_icon="🧾", layout="centered")
     inject_css()
+
+    cookies = EncryptedCookieManager(
+        prefix="yvora_app_",
+        password=COOKIE_PASSWORD,
+    )
+    if not cookies.ready():
+        st.stop()
+
     show_header()
 
     try:
@@ -1217,14 +1380,21 @@ def main() -> None:
         return
 
     st.sidebar.markdown("### Acesso")
+
     user = st.session_state.get("yv_user")
     if not user:
-        login_screen(users_df)
+        restored_user = try_restore_login_from_cookie(cookies, users_df)
+        if restored_user:
+            st.session_state["yv_user"] = restored_user
+            user = restored_user
+
+    if not user:
+        login_screen(users_df, cookies)
         return
 
     st.sidebar.success(user.get("nome", user["usuario"]))
     st.sidebar.caption(" | ".join(user.get("profiles", [])) or "sem perfil")
-    logout_button()
+    logout_button(cookies)
 
     menu = ["Início", "Nova requisição", "Minhas requisições", "Painel"]
     if can_any(user, ["aprovador", "admin"]):
@@ -1240,11 +1410,12 @@ def main() -> None:
     selected = menu_map[st.sidebar.radio("Ir para", list(menu_map.keys()))]
 
     if selected == "Início":
+        show_flash()
         render_home(req_df, user)
     elif selected == "Nova requisição":
         render_new_request(sh, itens_df, req_df, user)
     elif selected == "Minhas requisições":
-        render_my_requests(req_df, user)
+        render_my_requests(sh, req_df, user)
     elif selected == "Painel":
         render_panel(req_df, user)
     elif selected == "Aprovações":
