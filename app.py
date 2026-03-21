@@ -79,6 +79,7 @@ REQ_COLS = [
     "data_recebimento",
     "quantidade_recebida",
     "observacao_recebimento",
+    "nf_recebimento",
     "ultima_atualizacao",
 ]
 
@@ -178,7 +179,7 @@ def inject_css() -> None:
         .main .block-container {{
             padding-top: 0.7rem;
             padding-bottom: 5rem;
-            max-width: 940px;
+            max-width: 980px;
         }}
         section[data-testid="stSidebar"] {{
             background: rgba(255,255,255,0.52);
@@ -459,7 +460,7 @@ def ensure_worksheets(sh) -> None:
     current = {ws.title for ws in sh.worksheets()}
     for title in REQUIRED_SHEETS:
         if title not in current:
-            ws = sh.add_worksheet(title=title, rows=1000, cols=30)
+            ws = sh.add_worksheet(title=title, rows=1000, cols=40)
             if title == "itens":
                 ws.append_row(ITEM_COLS)
             elif title == "usuarios":
@@ -531,12 +532,15 @@ def update_row_by_number(
     current = ws.row_values(row_number)
     if len(current) < len(headers):
         current += [""] * (len(headers) - len(current))
+
     for idx, header in enumerate(headers):
         if header in data:
             current[idx] = data[header]
+
+    end_col_letter = "AE"
     ws.update(
-        f"A{row_number}:AD{row_number}",
-        [current[:30]],
+        f"A{row_number}:{end_col_letter}{row_number}",
+        [current[:len(headers)]],
         value_input_option="USER_ENTERED",
     )
 
@@ -644,6 +648,8 @@ def request_card(r: pd.Series, hint: str = "") -> None:
     elif cls == "today":
         extra = "<span class='pill pill-urgente'>Previsto para hoje</span>"
 
+    nf = safe_str(r.get("nf_recebimento"))
+
     st.markdown(
         f"""
         <div class='yv-card {cls}'>
@@ -659,7 +665,8 @@ def request_card(r: pd.Series, hint: str = "") -> None:
                 Solicitante: {safe_str(r["nome_solicitante"])} | Setor: {safe_str(r["setor"])}<br>
                 Fornecedor: {forn}<br>
                 Compra: {safe_str(r["data_compra"]) or "-"}<br>
-                Previsão: {safe_str(r["previsao_entrega"]) or "-"} | Recebimento: {safe_str(r["data_recebimento"]) or "-"}
+                Previsão: {safe_str(r["previsao_entrega"]) or "-"} | Recebimento: {safe_str(r["data_recebimento"]) or "-"}<br>
+                NF: {nf or "-"}
             </div>
             {f"<div class='yv-mini' style='margin-top:8px;'>{hint}</div>" if hint else ""}
         </div>
@@ -779,6 +786,7 @@ def render_new_request(
                 data_necessaria.strftime("%d/%m/%Y"),
                 justificativa,
                 "PENDENTE_APROVACAO",
+                "",
                 "",
                 "",
                 "",
@@ -1127,14 +1135,93 @@ def render_receiving(sh, req_df: pd.DataFrame, user: Dict) -> None:
             df["produto"].astype(str).str.contains(busca, case=False, na=False)
             | df["fornecedor_final"].astype(str).str.contains(busca, case=False, na=False)
             | df["fornecedor_sugerido"].astype(str).str.contains(busca, case=False, na=False)
+            | df["id_requisicao"].astype(str).str.contains(busca, case=False, na=False)
         ]
 
     if df.empty:
         st.info("Nenhum pedido encontrado.")
         return
 
+    st.markdown("### Recebimento em lote por NF")
+    st.caption("Selecione vários itens, informe a NF e confirme tudo de uma vez.")
+
+    lote_df = df.copy()
+    lote_df["label_lote"] = lote_df.apply(
+        lambda r: f"{safe_str(r['id_requisicao'])} | {safe_str(r['produto'])} | {safe_str(r['quantidade_aprovada']) or safe_str(r['quantidade_solicitada'])} {safe_str(r['unidade'])} | {safe_str(r['fornecedor_final']) or safe_str(r['fornecedor_sugerido'])}",
+        axis=1,
+    )
+
+    selected_labels = st.multiselect(
+        "Itens para associar à mesma NF",
+        options=lote_df["label_lote"].tolist(),
+        default=[],
+    )
+
+    nf_lote = st.text_input("NF de recebimento")
+    obs_lote = st.text_input("Observação do recebimento em lote")
+    qtd_total_recebida = st.checkbox("Receber quantidades aprovadas integralmente", value=True)
+
+    if st.button("Confirmar recebimento em lote", type="primary", use_container_width=True):
+        if not selected_labels:
+            st.error("Selecione pelo menos um item.")
+            return
+        if not nf_lote.strip():
+            st.error("Informe a NF de recebimento.")
+            return
+
+        for label in selected_labels:
+            row = lote_df[lote_df["label_lote"] == label].iloc[0]
+            req_id = safe_str(row["id_requisicao"])
+            row_n = find_row_number_by_id(sh, "requisicoes", "id_requisicao", req_id)
+            if row_n is None:
+                continue
+
+            qty_recebida = (
+                safe_str(row["quantidade_aprovada"])
+                or safe_str(row["quantidade_solicitada"])
+                or "0"
+            )
+
+            now = now_br()
+            payload = {
+                "status": "RECEBIDO",
+                "recebedor": user["usuario"],
+                "data_recebimento": fmt_dt(now),
+                "observacao_recebimento": obs_lote,
+                "nf_recebimento": nf_lote.strip(),
+                "ultima_atualizacao": fmt_dt(now),
+            }
+            if qtd_total_recebida:
+                payload["quantidade_recebida"] = qty_recebida
+
+            update_row_by_number(
+                sh,
+                "requisicoes",
+                row_n,
+                REQ_COLS,
+                payload,
+            )
+            write_log(
+                sh,
+                user["usuario"],
+                req_id,
+                "receber_em_lote",
+                "COMPRADO",
+                "RECEBIDO",
+                f"NF {nf_lote.strip()} | {obs_lote}",
+            )
+
+        clear_caches()
+        st.session_state["flash_message"] = "Recebimento em lote confirmado com sucesso."
+        st.session_state["flash_type"] = "success"
+        st.rerun()
+
+    st.markdown("---")
+    st.markdown("### Recebimento individual")
+
     for _, r in df.iloc[::-1].iterrows():
         request_card(r, "Confirme o recebimento abaixo")
+
         try:
             qtd_default = float(
                 str(
@@ -1153,7 +1240,9 @@ def render_receiving(sh, req_df: pd.DataFrame, user: Dict) -> None:
             value=qtd_default,
             key=f"rec_qtd_{r['id_requisicao']}",
         )
-        obs = c2.text_input("Obs. recebimento", key=f"rec_obs_{r['id_requisicao']}")
+        nf = c2.text_input("NF de recebimento", key=f"rec_nf_{r['id_requisicao']}")
+
+        obs = st.text_input("Obs. recebimento", key=f"rec_obs_{r['id_requisicao']}")
 
         if st.button(
             "Confirmar recebimento",
@@ -1161,6 +1250,10 @@ def render_receiving(sh, req_df: pd.DataFrame, user: Dict) -> None:
             type="primary",
             use_container_width=True,
         ):
+            if not nf.strip():
+                st.error("Informe a NF de recebimento.")
+                return
+
             row_n = find_row_number_by_id(
                 sh, "requisicoes", "id_requisicao", safe_str(r["id_requisicao"])
             )
@@ -1180,6 +1273,7 @@ def render_receiving(sh, req_df: pd.DataFrame, user: Dict) -> None:
                     "data_recebimento": fmt_dt(now),
                     "quantidade_recebida": qtd,
                     "observacao_recebimento": obs,
+                    "nf_recebimento": nf.strip(),
                     "ultima_atualizacao": fmt_dt(now),
                 },
             )
@@ -1190,7 +1284,7 @@ def render_receiving(sh, req_df: pd.DataFrame, user: Dict) -> None:
                 "receber",
                 "COMPRADO",
                 "RECEBIDO",
-                obs,
+                f"NF {nf.strip()} | {obs}",
             )
             clear_caches()
             st.session_state["flash_message"] = "Recebimento confirmado com sucesso."
@@ -1220,7 +1314,7 @@ def render_panel(req_df: pd.DataFrame, user: Dict) -> None:
         kpi_box("Atrasado", str(overdue))
 
     c1, c2 = st.columns(2)
-    busca = c1.text_input("Buscar item, fornecedor ou ID")
+    busca = c1.text_input("Buscar item, fornecedor, ID ou NF")
     status = c2.multiselect("Status", STATUS_FLOW)
 
     if busca:
@@ -1229,6 +1323,7 @@ def render_panel(req_df: pd.DataFrame, user: Dict) -> None:
             | df["fornecedor_sugerido"].astype(str).str.contains(busca, case=False, na=False)
             | df["fornecedor_final"].astype(str).str.contains(busca, case=False, na=False)
             | df["id_requisicao"].astype(str).str.contains(busca, case=False, na=False)
+            | df["nf_recebimento"].astype(str).str.contains(busca, case=False, na=False)
         ]
     if status:
         df = df[df["status"].isin(status)]
