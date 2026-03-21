@@ -1,8 +1,8 @@
+
 import os
-import json
 import math
 from datetime import datetime
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Optional
 
 import pandas as pd
 import streamlit as st
@@ -14,30 +14,19 @@ except Exception:
     gspread = None
     Credentials = None
 
-
 APP_TITLE = "YVORA | Requisições"
 BRAND_BG = "#EFE7DD"
 BRAND_BLUE = "#0E2A47"
-BRAND_CARD = "rgba(255,255,255,0.55)"
+BRAND_GOLD = "#C6A96A"
 BRAND_BORDER = "rgba(14,42,71,0.14)"
 DEFAULT_SPREADSHEET_ID = "19CH28p4VI4iFv9mRPnRPBMW1MHTqdW0-ZQhghC2_nrk"
 
-REQUIRED_SHEETS = [
-    "itens",
-    "fornecedores",
-    "usuarios",
-    "requisicoes",
-    "parametros",
-    "log_alteracoes",
-]
-
+REQUIRED_SHEETS = ["itens", "fornecedores", "usuarios", "requisicoes", "parametros", "log_alteracoes"]
 ITEM_COLS = [
     "cod_item", "produto", "categoria", "unidade", "fornecedor_principal",
     "contato_fornecedor", "preco_referencia", "estoque_minimo", "ativo", "observacao"
 ]
-
 USER_COLS = ["usuario", "nome", "senha", "perfil", "setor", "ativo"]
-
 REQ_COLS = [
     "id_requisicao", "data_solicitacao", "hora_solicitacao", "solicitante", "nome_solicitante", "setor",
     "cod_item", "produto", "categoria", "unidade", "fornecedor_sugerido",
@@ -47,17 +36,8 @@ REQ_COLS = [
     "recebedor", "data_recebimento", "quantidade_recebida", "observacao_recebimento",
     "ultima_atualizacao"
 ]
-
 LOG_COLS = ["data", "hora", "usuario", "id_requisicao", "acao", "status_anterior", "status_novo", "observacao"]
-
-STATUS_FLOW = [
-    "PENDENTE_APROVACAO",
-    "REPROVADO",
-    "APROVADO",
-    "COMPRADO",
-    "RECEBIDO",
-    "CANCELADO",
-]
+STATUS_FLOW = ["PENDENTE_APROVACAO", "REPROVADO", "APROVADO", "COMPRADO", "RECEBIDO", "CANCELADO"]
 
 
 def now_br() -> datetime:
@@ -72,166 +52,11 @@ def fmt_date(dt: datetime) -> str:
     return dt.strftime("%d/%m/%Y")
 
 
-def inject_css():
-    st.markdown(
-        f"""
-        <style>
-        html, body, [class*="css"] {{
-            background: {BRAND_BG} !important;
-        }}
-        .stApp {{
-            background: {BRAND_BG};
-        }}
-        section[data-testid="stSidebar"] {{
-            background: rgba(255,255,255,0.45);
-            border-right: 1px solid {BRAND_BORDER};
-        }}
-        .main .block-container {{
-            padding-top: 1rem;
-            padding-bottom: 5rem;
-            max-width: 880px;
-        }}
-        h1, h2, h3 {{
-            color: {BRAND_BLUE} !important;
-            font-family: Georgia, "Times New Roman", serif !important;
-        }}
-        .yv-sub {{
-            color: rgba(14,42,71,0.75);
-            font-size: 14px;
-            margin-top: -8px;
-            margin-bottom: 14px;
-        }}
-        .yv-card {{
-            background: {BRAND_CARD};
-            border: 1px solid {BRAND_BORDER};
-            border-radius: 18px;
-            padding: 14px 14px;
-            margin-bottom: 12px;
-            box-shadow: 0 1px 0 rgba(14,42,71,0.03);
-        }}
-        .yv-card-title {{
-            color: {BRAND_BLUE};
-            font-weight: 800;
-            font-size: 16px;
-            margin-bottom: 6px;
-        }}
-        .yv-grid-2 {{
-            display:grid;
-            grid-template-columns: 1fr 1fr;
-            gap: 10px;
-        }}
-        .yv-meta {{
-            color: rgba(14,42,71,0.74);
-            font-size: 12px;
-            line-height: 1.25rem;
-        }}
-        .yv-big {{
-            font-size: 24px;
-            font-weight: 900;
-            color: {BRAND_BLUE};
-        }}
-        .yv-chip {{
-            display: inline-block;
-            padding: 4px 10px;
-            border-radius: 999px;
-            font-size: 12px;
-            font-weight: 800;
-            border: 1px solid {BRAND_BORDER};
-            margin-right: 6px;
-            margin-bottom: 6px;
-            background: rgba(255,255,255,0.55);
-            color: {BRAND_BLUE};
-        }}
-        .yv-status {{
-            display: inline-block;
-            padding: 5px 11px;
-            border-radius: 999px;
-            font-size: 12px;
-            font-weight: 900;
-        }}
-        .status-pendente_aprovacao {{
-            background: rgba(198,169,106,0.22);
-            color: #7c5b12;
-        }}
-        .status-aprovado {{
-            background: rgba(14,42,71,0.12);
-            color: {BRAND_BLUE};
-        }}
-        .status-comprado {{
-            background: rgba(233,128,23,0.16);
-            color: #9b5d00;
-        }}
-        .status-recebido {{
-            background: rgba(47,93,75,0.16);
-            color: #2F5D4B;
-        }}
-        .status-reprovado {{
-            background: rgba(140,28,28,0.12);
-            color: #8C1C1C;
-        }}
-        .status-cancelado {{
-            background: rgba(120,120,120,0.16);
-            color: #555;
-        }}
-        .kpi {{
-            background: rgba(255,255,255,0.45);
-            border: 1px solid {BRAND_BORDER};
-            border-radius: 18px;
-            padding: 12px 14px;
-            min-height: 84px;
-        }}
-        .kpi-label {{
-            color: rgba(14,42,71,0.7);
-            font-size: 12px;
-        }}
-        .kpi-value {{
-            color: {BRAND_BLUE};
-            font-size: 24px;
-            font-weight: 900;
-            margin-top: 6px;
-        }}
-        .stButton > button {{
-            border-radius: 16px !important;
-            min-height: 2.6rem !important;
-            font-weight: 700 !important;
-        }}
-        .stTextInput input, .stTextArea textarea, .stNumberInput input {{
-            border-radius: 14px !important;
-        }}
-        div[data-baseweb="select"] > div,
-        .stDateInput > div > div {{
-            border-radius: 14px !important;
-        }}
-        @media (max-width: 720px) {{
-            .main .block-container {{
-                padding-left: 0.9rem;
-                padding-right: 0.9rem;
-                max-width: 100%;
-            }}
-        }}
-        </style>
-        """,
-        unsafe_allow_html=True,
-    )
-
-
-def maybe_show_logo():
-    for fn in ["logo.png", "yvora_logo.png", "logo.jpg", "yvora_logo.jpg"]:
-        if os.path.exists(fn):
-            st.image(fn, width=170)
-            return
-
-
-def show_header():
-    left, right = st.columns([1, 3])
-    with left:
-        maybe_show_logo()
-    with right:
-        st.markdown(f"<h1>{APP_TITLE}</h1>", unsafe_allow_html=True)
-        st.markdown(
-            "<div class='yv-sub'>Solicitação, aprovação, compras, acompanhamento e recebimento em uma interface leve para celular.</div>",
-            unsafe_allow_html=True,
-        )
+def parse_date_br(text: str):
+    try:
+        return datetime.strptime(str(text), "%d/%m/%Y")
+    except Exception:
+        return None
 
 
 def safe_str(x) -> str:
@@ -242,8 +67,103 @@ def safe_str(x) -> str:
     return str(x).strip()
 
 
-def normalize_text(x: str) -> str:
-    return safe_str(x).strip().upper()
+def inject_css():
+    st.markdown(
+        f"""
+        <style>
+        html, body, [class*="css"] {{
+            background: {BRAND_BG} !important;
+        }}
+        .stApp {{ background: {BRAND_BG}; }}
+        section[data-testid="stSidebar"] {{
+            background: rgba(255,255,255,0.52);
+            border-right: 1px solid {BRAND_BORDER};
+        }}
+        .main .block-container {{
+            padding-top: 0.8rem;
+            padding-bottom: 5rem;
+            max-width: 920px;
+        }}
+        h1, h2, h3 {{
+            color: {BRAND_BLUE} !important;
+            font-family: Georgia, "Times New Roman", serif !important;
+            letter-spacing: 0.2px;
+        }}
+        .yv-sub {{
+            color: rgba(14,42,71,0.76);
+            font-size: 14px;
+            margin-top: -10px;
+            margin-bottom: 14px;
+        }}
+        .yv-card {{
+            background: rgba(255,255,255,0.60);
+            border: 1px solid {BRAND_BORDER};
+            border-radius: 20px;
+            padding: 14px;
+            margin-bottom: 12px;
+            box-shadow: 0 1px 0 rgba(14,42,71,0.03);
+        }}
+        .yv-card.overdue {{
+            border: 1px solid rgba(140,28,28,0.22);
+            background: rgba(255,246,246,0.9);
+        }}
+        .yv-card.today {{
+            border: 1px solid rgba(198,169,106,0.30);
+            background: rgba(255,251,240,0.92);
+        }}
+        .yv-card-title {{
+            color: {BRAND_BLUE};
+            font-weight: 900;
+            font-size: 16px;
+            margin-bottom: 5px;
+        }}
+        .yv-meta {{
+            color: rgba(14,42,71,0.74);
+            font-size: 12px;
+            line-height: 1.25rem;
+        }}
+        .yv-mini {{ color: rgba(14,42,71,0.64); font-size: 11px; }}
+        .yv-status {{ display: inline-block; padding: 6px 11px; border-radius: 999px; font-size: 12px; font-weight: 900; }}
+        .status-pendente_aprovacao {{ background: rgba(198,169,106,0.22); color: #7c5b12; }}
+        .status-aprovado {{ background: rgba(14,42,71,0.10); color: {BRAND_BLUE}; }}
+        .status-comprado {{ background: rgba(233,128,23,0.16); color: #9b5d00; }}
+        .status-recebido {{ background: rgba(47,93,75,0.16); color: #2F5D4B; }}
+        .status-reprovado {{ background: rgba(140,28,28,0.12); color: #8C1C1C; }}
+        .status-cancelado {{ background: rgba(120,120,120,0.16); color: #555; }}
+        .priority-normal {{ color: {BRAND_BLUE}; }}
+        .priority-urgente {{ color: #9b5d00; }}
+        .priority-critica {{ color: #8C1C1C; }}
+        .kpi {{ background: rgba(255,255,255,0.50); border: 1px solid {BRAND_BORDER}; border-radius: 18px; padding: 12px 14px; min-height: 86px; }}
+        .kpi-label {{ color: rgba(14,42,71,0.70); font-size: 12px; }}
+        .kpi-value {{ color: {BRAND_BLUE}; font-size: 24px; font-weight: 900; margin-top: 6px; }}
+        .pill-btn {{ display:inline-block; padding:7px 11px; border-radius:999px; border:1px solid {BRAND_BORDER}; background: rgba(255,255,255,0.55); color:{BRAND_BLUE}; font-size:12px; font-weight:800; margin-right: 4px; }}
+        .stButton > button {{ border-radius: 16px !important; min-height: 2.8rem !important; font-weight: 800 !important; font-size: 14px !important; }}
+        .stTextInput input, .stTextArea textarea, .stNumberInput input {{ border-radius: 14px !important; }}
+        div[data-baseweb="select"] > div, .stDateInput > div > div {{ border-radius: 14px !important; }}
+        @media (max-width: 720px) {{
+            .main .block-container {{ padding-left: 0.85rem; padding-right: 0.85rem; max-width: 100%; }}
+            .stButton > button {{ min-height: 3rem !important; }}
+        }}
+        </style>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
+def maybe_show_logo():
+    for fn in ["logo.png", "yvora_logo.png", "logo.jpg", "yvora_logo.jpg"]:
+        if os.path.exists(fn):
+            st.image(fn, width=175)
+            return
+
+
+def show_header():
+    left, right = st.columns([1, 3])
+    with left:
+        maybe_show_logo()
+    with right:
+        st.markdown(f"<h1>{APP_TITLE}</h1>", unsafe_allow_html=True)
+        st.markdown("<div class='yv-sub'>Versão mobile com cards premium, filtros rápidos, destaque para atrasos e ações maiores para a operação.</div>", unsafe_allow_html=True)
 
 
 def parse_profiles(profile_text: str) -> List[str]:
@@ -259,8 +179,6 @@ def parse_profiles(profile_text: str) -> List[str]:
 
 
 def has_profile(user: Dict, profile: str) -> bool:
-    if not user:
-        return False
     return profile.lower() in user.get("profiles", [])
 
 
@@ -270,32 +188,29 @@ def can_any(user: Dict, profiles: List[str]) -> bool:
 
 def status_badge(status: str) -> str:
     s = safe_str(status)
-    klass = s.lower()
-    return f"<span class='yv-status status-{klass}'>{s.replace('_', ' ')}</span>"
+    return f"<span class='yv-status status-{s.lower()}'>{s.replace('_', ' ')}</span>"
+
+
+def priority_badge(priority: str) -> str:
+    p = safe_str(priority).upper()
+    return f"<span class='pill-btn priority-{p.lower()}'>{p}</span>"
 
 
 def kpi_box(label: str, value: str):
-    st.markdown(
-        f"<div class='kpi'><div class='kpi-label'>{label}</div><div class='kpi-value'>{value}</div></div>",
-        unsafe_allow_html=True,
-    )
+    st.markdown(f"<div class='kpi'><div class='kpi-label'>{label}</div><div class='kpi-value'>{value}</div></div>", unsafe_allow_html=True)
 
 
 @st.cache_resource(show_spinner=False)
 def get_gsheet():
     if gspread is None or Credentials is None:
         raise RuntimeError("Dependências do Google Sheets não instaladas. Rode pip install -r requirements.txt")
-    secrets = st.secrets
-    if "gcp_service_account" not in secrets:
+    if "gcp_service_account" not in st.secrets:
         raise RuntimeError("Configure gcp_service_account em .streamlit/secrets.toml")
-    creds_info = dict(secrets["gcp_service_account"])
-    scopes = [
-        "https://www.googleapis.com/auth/spreadsheets",
-        "https://www.googleapis.com/auth/drive",
-    ]
+    creds_info = dict(st.secrets["gcp_service_account"])
+    scopes = ["https://www.googleapis.com/auth/spreadsheets", "https://www.googleapis.com/auth/drive"]
     creds = Credentials.from_service_account_info(creds_info, scopes=scopes)
     client = gspread.authorize(creds)
-    spreadsheet_id = secrets.get("google_sheets", {}).get("spreadsheet_id", DEFAULT_SPREADSHEET_ID)
+    spreadsheet_id = st.secrets.get("google_sheets", {}).get("spreadsheet_id", DEFAULT_SPREADSHEET_ID)
     return client.open_by_key(spreadsheet_id)
 
 
@@ -321,17 +236,7 @@ def ensure_worksheets(sh):
 def ws_to_df(sh, title: str) -> pd.DataFrame:
     ws = sh.worksheet(title)
     records = ws.get_all_records(default_blank="")
-    df = pd.DataFrame(records)
-    if df.empty:
-        if title == "itens":
-            return pd.DataFrame(columns=ITEM_COLS)
-        if title == "usuarios":
-            return pd.DataFrame(columns=USER_COLS)
-        if title == "requisicoes":
-            return pd.DataFrame(columns=REQ_COLS)
-        if title == "log_alteracoes":
-            return pd.DataFrame(columns=LOG_COLS)
-    return df
+    return pd.DataFrame(records) if records else pd.DataFrame()
 
 
 def append_row(sh, title: str, row: List):
@@ -346,9 +251,7 @@ def update_cell_by_row_number(sh, title: str, row_number: int, headers: List[str
     for idx, header in enumerate(headers, start=1):
         if header in data:
             current[idx - 1] = data[header]
-    ws.update(f"A{row_number}:{chr(64+min(len(headers),26))}{row_number}", [current[:len(headers)]], value_input_option="USER_ENTERED")
-    if len(headers) > 26:
-        ws.update(f"AA{row_number}:AD{row_number}", [current[26:30]], value_input_option="USER_ENTERED")
+    ws.update(f"A{row_number}:AD{row_number}", [current[:30]], value_input_option="USER_ENTERED")
 
 
 def get_next_req_id(req_df: pd.DataFrame) -> str:
@@ -383,71 +286,31 @@ def find_row_number_by_id(sh, title: str, id_col_name: str, target_id: str) -> O
 
 def write_log(sh, usuario: str, req_id: str, acao: str, anterior: str, novo: str, obs: str):
     now = now_br()
-    append_row(
-        sh,
-        "log_alteracoes",
-        [
-            fmt_date(now),
-            now.strftime("%H:%M:%S"),
-            usuario,
-            req_id,
-            acao,
-            anterior,
-            novo,
-            obs,
-        ],
-    )
+    append_row(sh, "log_alteracoes", [fmt_date(now), now.strftime("%H:%M:%S"), usuario, req_id, acao, anterior, novo, obs])
+
+
+def coerce(df: pd.DataFrame, cols: List[str]) -> pd.DataFrame:
+    if df.empty:
+        return pd.DataFrame(columns=cols)
+    for c in cols:
+        if c not in df.columns:
+            df[c] = ""
+    return df[cols].fillna("")
 
 
 def load_data():
     sh = get_gsheet()
     ensure_worksheets(sh)
-    itens = ws_to_df(sh, "itens")
-    usuarios = ws_to_df(sh, "usuarios")
-    requisicoes = ws_to_df(sh, "requisicoes")
-    fornecedores = ws_to_df(sh, "fornecedores")
-    parametros = ws_to_df(sh, "parametros")
-    return sh, itens, usuarios, requisicoes, fornecedores, parametros
-
-
-def coerce_requisicoes(df: pd.DataFrame) -> pd.DataFrame:
-    if df.empty:
-        return pd.DataFrame(columns=REQ_COLS)
-    for c in REQ_COLS:
-        if c not in df.columns:
-            df[c] = ""
-    df = df.fillna("")
-    return df
-
-
-def coerce_itens(df: pd.DataFrame) -> pd.DataFrame:
-    if df.empty:
-        return pd.DataFrame(columns=ITEM_COLS)
-    for c in ITEM_COLS:
-        if c not in df.columns:
-            df[c] = ""
-    df = df.fillna("")
-    df = df[df["ativo"].astype(str).str.upper().ne("NAO")]
-    return df
-
-
-def load_users_df(df: pd.DataFrame) -> pd.DataFrame:
-    if df.empty:
-        return pd.DataFrame(columns=USER_COLS)
-    for c in USER_COLS:
-        if c not in df.columns:
-            df[c] = ""
-    df = df.fillna("")
-    return df[df["ativo"].astype(str).str.upper().ne("NAO")]
+    itens = coerce(ws_to_df(sh, "itens"), ITEM_COLS)
+    itens = itens[itens["ativo"].astype(str).str.upper().ne("NAO")]
+    usuarios = coerce(ws_to_df(sh, "usuarios"), USER_COLS)
+    usuarios = usuarios[usuarios["ativo"].astype(str).str.upper().ne("NAO")]
+    req = coerce(ws_to_df(sh, "requisicoes"), REQ_COLS)
+    return sh, itens, usuarios, req
 
 
 def authenticate(users_df: pd.DataFrame, usuario: str, senha: str) -> Optional[Dict]:
-    if users_df.empty:
-        return None
-    match = users_df[
-        (users_df["usuario"].astype(str).str.strip() == usuario.strip()) &
-        (users_df["senha"].astype(str).str.strip() == senha.strip())
-    ]
+    match = users_df[(users_df["usuario"].astype(str).str.strip() == usuario.strip()) & (users_df["senha"].astype(str).str.strip() == senha.strip())]
     if match.empty:
         return None
     row = match.iloc[0].to_dict()
@@ -456,183 +319,124 @@ def authenticate(users_df: pd.DataFrame, usuario: str, senha: str) -> Optional[D
 
 
 def mobile_menu_label(name: str) -> str:
-    mapping = {
-        "Início": "🏠 Início",
-        "Nova requisição": "📝 Solicitar",
-        "Minhas requisições": "📦 Minhas",
-        "Aprovações": "✅ Aprovar",
-        "Compras": "🛒 Compras",
-        "Recebimento": "📥 Receber",
-        "Painel": "📊 Painel",
-        "Admin": "⚙️ Admin",
-    }
+    mapping = {"Início": "🏠 Início", "Nova requisição": "📝 Solicitar", "Minhas requisições": "📦 Minhas", "Aprovações": "✅ Aprovar", "Compras": "🛒 Compras", "Recebimento": "📥 Receber", "Painel": "📊 Painel", "Admin": "⚙️ Admin"}
     return mapping.get(name, name)
 
 
+def delivery_flags(r: pd.Series):
+    if safe_str(r.get("status")) != "COMPRADO":
+        return ""
+    prev = parse_date_br(r.get("previsao_entrega"))
+    if not prev:
+        return ""
+    today = datetime.strptime(fmt_date(now_br()), "%d/%m/%Y")
+    if prev.date() < today.date():
+        return "overdue"
+    if prev.date() == today.date():
+        return "today"
+    return ""
+
+
+def request_card(r: pd.Series, show_actions_hint: str = ""):
+    cls = delivery_flags(r)
+    forn = safe_str(r.get("fornecedor_final")) or safe_str(r.get("fornecedor_sugerido"))
+    entrega = safe_str(r.get("previsao_entrega")) or "-"
+    receb = safe_str(r.get("data_recebimento")) or "-"
+    qty = safe_str(r.get("quantidade_aprovada")) or safe_str(r.get("quantidade_solicitada"))
+    priority = safe_str(r.get("prioridade"))
+    top_note = ""
+    if cls == "overdue":
+        top_note = "<span class='pill-btn' style='color:#8C1C1C;border-color:rgba(140,28,28,0.22);'>Entrega atrasada</span>"
+    elif cls == "today":
+        top_note = "<span class='pill-btn' style='color:#9b5d00;border-color:rgba(198,169,106,0.30);'>Previsto para hoje</span>"
+    st.markdown(f"""
+        <div class='yv-card {cls}'>
+            <div style='display:flex;justify-content:space-between;align-items:flex-start;gap:10px;'>
+                <div style='min-width:0;'>
+                    <div class='yv-card-title'>{safe_str(r['produto'])}</div>
+                    <div>{status_badge(safe_str(r['status']))} {priority_badge(priority)} {top_note}</div>
+                </div>
+                <div class='yv-mini'>{safe_str(r['id_requisicao'])}</div>
+            </div>
+            <div class='yv-meta' style='margin-top:8px;'>
+                Quantidade: <b>{qty} {safe_str(r['unidade'])}</b><br>
+                Solicitante: {safe_str(r['nome_solicitante'])} | Setor: {safe_str(r['setor'])}<br>
+                Fornecedor: {forn}<br>
+                Previsão: {entrega} | Recebimento: {receb}
+            </div>
+            {f"<div class='yv-mini' style='margin-top:8px;'>{show_actions_hint}</div>" if show_actions_hint else ""}
+        </div>
+        """, unsafe_allow_html=True)
+
+
 def render_home(req_df: pd.DataFrame, user: Dict):
-    st.subheader("Visão geral")
+    st.subheader("Resumo operacional")
     df = req_df.copy()
     if not can_any(user, ["admin", "aprovador", "compras", "recebimento"]):
         df = df[df["solicitante"].astype(str) == user["usuario"]]
-    c1, c2, c3 = st.columns(3)
-    with c1:
-        kpi_box("Pendentes", str((df["status"] == "PENDENTE_APROVACAO").sum()))
-    with c2:
-        kpi_box("Comprados", str((df["status"] == "COMPRADO").sum()))
-    with c3:
-        kpi_box("Recebidos", str((df["status"] == "RECEBIDO").sum()))
-
-    st.markdown("<div class='yv-card'>", unsafe_allow_html=True)
-    st.markdown("<div class='yv-card-title'>Últimas requisições</div>", unsafe_allow_html=True)
-    if df.empty:
+    overdue = sum(1 for _, r in df.iterrows() if delivery_flags(r) == "overdue")
+    today = sum(1 for _, r in df.iterrows() if delivery_flags(r) == "today")
+    c1, c2, c3, c4 = st.columns(4)
+    with c1: kpi_box("Pendentes", str((df["status"] == "PENDENTE_APROVACAO").sum()))
+    with c2: kpi_box("Aprovados", str((df["status"] == "APROVADO").sum()))
+    with c3: kpi_box("Previstos hoje", str(today))
+    with c4: kpi_box("Atrasados", str(overdue))
+    prev = df.tail(10).iloc[::-1]
+    if prev.empty:
         st.info("Ainda não há requisições.")
     else:
-        prev = df.tail(8).iloc[::-1]
         for _, r in prev.iterrows():
-            st.markdown(
-                f"""
-                <div class='yv-card' style='margin:8px 0 0 0;padding:12px;'>
-                    <div style='display:flex;justify-content:space-between;gap:10px;align-items:center;'>
-                        <div>
-                            <div class='yv-card-title'>{safe_str(r["produto"])}</div>
-                            <div class='yv-meta'>ID {safe_str(r["id_requisicao"])} | {safe_str(r["quantidade_solicitada"])} {safe_str(r["unidade"])} | {safe_str(r["fornecedor_sugerido"])}</div>
-                        </div>
-                        <div>{status_badge(safe_str(r["status"]))}</div>
-                    </div>
-                </div>
-                """,
-                unsafe_allow_html=True,
-            )
-    st.markdown("</div>", unsafe_allow_html=True)
+            request_card(r)
 
 
 def render_new_request(sh, itens_df: pd.DataFrame, req_df: pd.DataFrame, user: Dict):
     st.subheader("Nova requisição")
-    if itens_df.empty:
-        st.warning("A aba de itens está vazia.")
-        return
-
-    search = st.text_input("Buscar item", placeholder="Digite nome, código ou categoria")
+    search = st.text_input("Buscar item", placeholder="Nome, código ou categoria")
     tmp = itens_df.copy()
     if search:
-        mask = (
-            tmp["produto"].astype(str).str.contains(search, case=False, na=False) |
-            tmp["cod_item"].astype(str).str.contains(search, case=False, na=False) |
-            tmp["categoria"].astype(str).str.contains(search, case=False, na=False)
-        )
+        mask = tmp["produto"].astype(str).str.contains(search, case=False, na=False) | tmp["cod_item"].astype(str).str.contains(search, case=False, na=False) | tmp["categoria"].astype(str).str.contains(search, case=False, na=False)
         tmp = tmp[mask]
-
-    options = tmp.apply(lambda x: f'{safe_str(x["produto"])} | cód. {safe_str(x["cod_item"])} | {safe_str(x["categoria"])}', axis=1).tolist()
-    if not options:
+    if tmp.empty:
         st.info("Nenhum item encontrado.")
         return
-
-    selected = st.selectbox("Item", options)
-    row = tmp.iloc[options.index(selected)]
-
-    st.markdown(
-        f"""
+    tmp = tmp.sort_values(["categoria", "produto"])
+    labels = tmp.apply(lambda x: f"{safe_str(x['produto'])} | {safe_str(x['categoria'])} | cód. {safe_str(x['cod_item'])}", axis=1).tolist()
+    selected = st.selectbox("Selecione o item", labels)
+    row = tmp.iloc[labels.index(selected)]
+    st.markdown(f"""
         <div class='yv-card'>
-            <div class='yv-card-title'>{safe_str(row["produto"])}</div>
-            <div class='yv-meta'>Código: {safe_str(row["cod_item"])}<br>Categoria: {safe_str(row["categoria"])}<br>Fornecedor sugerido: {safe_str(row["fornecedor_principal"])}<br>Custo ref.: {safe_str(row["preco_referencia"])}</div>
+            <div class='yv-card-title'>{safe_str(row['produto'])}</div>
+            <div class='yv-meta'>Código: {safe_str(row['cod_item'])}<br>Categoria: {safe_str(row['categoria'])}<br>Unidade: {safe_str(row['unidade']) or '-'}<br>Fornecedor sugerido: {safe_str(row['fornecedor_principal'])}<br>Custo de referência: {safe_str(row['preco_referencia']) or '-'}</div>
         </div>
-        """,
-        unsafe_allow_html=True,
-    )
-
-    qtd = st.number_input("Quantidade solicitada", min_value=0.01, value=1.0, step=1.0)
-    prioridade = st.selectbox("Prioridade", ["NORMAL", "URGENTE", "CRITICA"])
-    data_necessaria = st.date_input("Necessário para quando")
+        """, unsafe_allow_html=True)
+    c1, c2 = st.columns(2)
+    qtd = c1.number_input("Quantidade", min_value=0.01, value=1.0, step=1.0)
+    prioridade = c2.selectbox("Prioridade", ["NORMAL", "URGENTE", "CRITICA"])
+    data_necessaria = st.date_input("Necessário até")
     justificativa = st.text_area("Justificativa", placeholder="Explique a necessidade, principalmente em urgências")
-
     if st.button("Enviar requisição", type="primary", use_container_width=True):
         if prioridade in ["URGENTE", "CRITICA"] and not justificativa.strip():
             st.error("Justificativa obrigatória para prioridade urgente ou crítica.")
             return
-
         now = now_br()
         req_id = get_next_req_id(req_df)
-        append_row(
-            sh,
-            "requisicoes",
-            [
-                req_id,
-                fmt_date(now),
-                now.strftime("%H:%M:%S"),
-                user["usuario"],
-                user.get("nome", user["usuario"]),
-                user.get("setor", ""),
-                safe_str(row["cod_item"]),
-                safe_str(row["produto"]),
-                safe_str(row["categoria"]),
-                safe_str(row["unidade"]),
-                safe_str(row["fornecedor_principal"]),
-                qtd,
-                prioridade,
-                data_necessaria.strftime("%d/%m/%Y"),
-                justificativa,
-                "PENDENTE_APROVACAO",
-                "",
-                "",
-                "",
-                "",
-                "",
-                "",
-                "",
-                "",
-                "",
-                "",
-                "",
-                "",
-                "",
-                fmt_dt(now),
-            ],
-        )
+        append_row(sh, "requisicoes", [req_id, fmt_date(now), now.strftime("%H:%M:%S"), user["usuario"], user.get("nome", user["usuario"]), user.get("setor", ""), safe_str(row["cod_item"]), safe_str(row["produto"]), safe_str(row["categoria"]), safe_str(row["unidade"]), safe_str(row["fornecedor_principal"]), qtd, prioridade, data_necessaria.strftime("%d/%m/%Y"), justificativa, "PENDENTE_APROVACAO", "", "", "", "", "", "", "", "", "", "", "", "", "", fmt_dt(now)])
         write_log(sh, user["usuario"], req_id, "nova_requisicao", "", "PENDENTE_APROVACAO", justificativa)
-        st.success(f"Requisição {req_id} criada com sucesso.")
-        st.cache_data.clear()
+        st.success(f"Requisição {req_id} criada.")
         st.cache_resource.clear()
         st.rerun()
-
-
-def request_card(r: pd.Series):
-    entrega = safe_str(r.get("previsao_entrega", ""))
-    receb = safe_str(r.get("data_recebimento", ""))
-    st.markdown(
-        f"""
-        <div class='yv-card'>
-            <div style='display:flex;justify-content:space-between;gap:10px;align-items:flex-start;'>
-                <div style='min-width:0;'>
-                    <div class='yv-card-title'>{safe_str(r["produto"])}</div>
-                    <div class='yv-meta'>
-                        ID {safe_str(r["id_requisicao"])}<br>
-                        Solicitante: {safe_str(r["nome_solicitante"])}<br>
-                        Quantidade: {safe_str(r["quantidade_solicitada"])} {safe_str(r["unidade"])}<br>
-                        Fornecedor: {safe_str(r["fornecedor_final"]) or safe_str(r["fornecedor_sugerido"])}<br>
-                        Previsão: {entrega or "-"}<br>
-                        Recebimento: {receb or "-"}
-                    </div>
-                </div>
-                <div>{status_badge(safe_str(r["status"]))}</div>
-            </div>
-        </div>
-        """,
-        unsafe_allow_html=True,
-    )
 
 
 def render_my_requests(req_df: pd.DataFrame, user: Dict):
     st.subheader("Minhas requisições")
     df = req_df[req_df["solicitante"].astype(str) == user["usuario"]].copy()
-    status_filter = st.multiselect("Status", STATUS_FLOW, default=[])
+    c1, c2 = st.columns(2)
+    busca = c1.text_input("Buscar item ou ID")
+    status_filter = c2.multiselect("Status", STATUS_FLOW)
+    if busca:
+        df = df[df["produto"].astype(str).str.contains(busca, case=False, na=False) | df["id_requisicao"].astype(str).str.contains(busca, case=False, na=False)]
     if status_filter:
         df = df[df["status"].isin(status_filter)]
-    busca = st.text_input("Buscar por item ou ID")
-    if busca:
-        df = df[
-            df["produto"].astype(str).str.contains(busca, case=False, na=False) |
-            df["id_requisicao"].astype(str).str.contains(busca, case=False, na=False)
-        ]
     if df.empty:
         st.info("Nenhuma requisição encontrada.")
         return
@@ -649,63 +453,43 @@ def render_approvals(sh, req_df: pd.DataFrame, user: Dict):
     if df.empty:
         st.success("Não há itens pendentes de aprovação.")
         return
-    setor = st.selectbox("Filtrar por setor", ["Todos"] + sorted([x for x in df["setor"].astype(str).unique().tolist() if x]))
+    c1, c2 = st.columns(2)
+    setor = c1.selectbox("Setor", ["Todos"] + sorted([x for x in df["setor"].astype(str).unique().tolist() if x]))
+    prioridade = c2.selectbox("Prioridade", ["Todas", "NORMAL", "URGENTE", "CRITICA"])
     if setor != "Todos":
         df = df[df["setor"].astype(str) == setor]
-
+    if prioridade != "Todas":
+        df = df[df["prioridade"].astype(str) == prioridade]
     for _, r in df.iloc[::-1].iterrows():
-        request_card(r)
-        with st.expander(f"Ações | {safe_str(r['id_requisicao'])}", expanded=False):
-            qty_aprov = st.number_input(
-                "Quantidade aprovada",
-                min_value=0.0,
-                value=float(r["quantidade_solicitada"]) if safe_str(r["quantidade_solicitada"]) else 0.0,
-                key=f"aprv_qtd_{r['id_requisicao']}",
-            )
-            obs = st.text_area("Observação da aprovação", key=f"aprv_obs_{r['id_requisicao']}")
-            c1, c2 = st.columns(2)
-            if c1.button("Aprovar", key=f"btn_ok_{r['id_requisicao']}", use_container_width=True):
-                row_n = find_row_number_by_id(sh, "requisicoes", "id_requisicao", safe_str(r["id_requisicao"]))
-                if not row_n:
-                    st.error("Requisição não encontrada na planilha.")
-                    return
-                now = now_br()
-                update_cell_by_row_number(
-                    sh, "requisicoes", row_n, REQ_COLS,
-                    {
-                        "status": "APROVADO",
-                        "aprovador": user["usuario"],
-                        "data_aprovacao": fmt_dt(now),
-                        "observacao_aprovacao": obs,
-                        "quantidade_aprovada": qty_aprov,
-                        "ultima_atualizacao": fmt_dt(now),
-                    },
-                )
-                write_log(sh, user["usuario"], safe_str(r["id_requisicao"]), "aprovar", "PENDENTE_APROVACAO", "APROVADO", obs)
-                st.success("Requisição aprovada.")
-                st.cache_resource.clear()
-                st.rerun()
-
-            if c2.button("Reprovar", key=f"btn_no_{r['id_requisicao']}", use_container_width=True):
-                if not obs.strip():
-                    st.error("Informe a observação para reprovar.")
-                    return
-                row_n = find_row_number_by_id(sh, "requisicoes", "id_requisicao", safe_str(r["id_requisicao"]))
-                now = now_br()
-                update_cell_by_row_number(
-                    sh, "requisicoes", row_n, REQ_COLS,
-                    {
-                        "status": "REPROVADO",
-                        "aprovador": user["usuario"],
-                        "data_aprovacao": fmt_dt(now),
-                        "observacao_aprovacao": obs,
-                        "ultima_atualizacao": fmt_dt(now),
-                    },
-                )
-                write_log(sh, user["usuario"], safe_str(r["id_requisicao"]), "reprovar", "PENDENTE_APROVACAO", "REPROVADO", obs)
-                st.warning("Requisição reprovada.")
-                st.cache_resource.clear()
-                st.rerun()
+        request_card(r, "Aprove ou reprove abaixo")
+        try:
+            qty_default = float(str(r["quantidade_solicitada"]).replace(",", "."))
+        except Exception:
+            qty_default = 0.0
+        c1, c2 = st.columns(2)
+        qty_aprov = c1.number_input("Qtd. aprovada", min_value=0.0, value=qty_default, key=f"ap_qtd_{r['id_requisicao']}")
+        obs = c2.text_input("Obs. aprovação", key=f"ap_obs_{r['id_requisicao']}")
+        b1, b2 = st.columns(2)
+        if b1.button("Aprovar", key=f"ap_ok_{r['id_requisicao']}", type="primary", use_container_width=True):
+            row_n = find_row_number_by_id(sh, "requisicoes", "id_requisicao", safe_str(r["id_requisicao"]))
+            now = now_br()
+            update_cell_by_row_number(sh, "requisicoes", row_n, REQ_COLS, {"status": "APROVADO", "aprovador": user["usuario"], "data_aprovacao": fmt_dt(now), "observacao_aprovacao": obs, "quantidade_aprovada": qty_aprov, "ultima_atualizacao": fmt_dt(now)})
+            write_log(sh, user["usuario"], safe_str(r["id_requisicao"]), "aprovar", "PENDENTE_APROVACAO", "APROVADO", obs)
+            st.success("Requisição aprovada.")
+            st.cache_resource.clear()
+            st.rerun()
+        if b2.button("Reprovar", key=f"ap_no_{r['id_requisicao']}", use_container_width=True):
+            if not obs.strip():
+                st.error("Informe a observação para reprovar.")
+                return
+            row_n = find_row_number_by_id(sh, "requisicoes", "id_requisicao", safe_str(r["id_requisicao"]))
+            now = now_br()
+            update_cell_by_row_number(sh, "requisicoes", row_n, REQ_COLS, {"status": "REPROVADO", "aprovador": user["usuario"], "data_aprovacao": fmt_dt(now), "observacao_aprovacao": obs, "ultima_atualizacao": fmt_dt(now)})
+            write_log(sh, user["usuario"], safe_str(r["id_requisicao"]), "reprovar", "PENDENTE_APROVACAO", "REPROVADO", obs)
+            st.warning("Requisição reprovada.")
+            st.cache_resource.clear()
+            st.rerun()
+        st.divider()
 
 
 def render_buying(sh, req_df: pd.DataFrame, user: Dict):
@@ -717,36 +501,29 @@ def render_buying(sh, req_df: pd.DataFrame, user: Dict):
     if df.empty:
         st.success("Não há requisições aprovadas aguardando compra.")
         return
-    fornecedor = st.selectbox("Fornecedor", ["Todos"] + sorted([x for x in df["fornecedor_sugerido"].astype(str).unique().tolist() if x]))
+    c1, c2 = st.columns(2)
+    fornecedor = c1.selectbox("Fornecedor", ["Todos"] + sorted([x for x in df["fornecedor_sugerido"].astype(str).unique().tolist() if x]))
+    prioridade = c2.selectbox("Prioridade", ["Todas", "NORMAL", "URGENTE", "CRITICA"])
     if fornecedor != "Todos":
         df = df[df["fornecedor_sugerido"].astype(str) == fornecedor]
-
+    if prioridade != "Todas":
+        df = df[df["prioridade"].astype(str) == prioridade]
     for _, r in df.iloc[::-1].iterrows():
-        request_card(r)
-        with st.expander(f"Atualizar compra | {safe_str(r['id_requisicao'])}", expanded=False):
-            fornecedor_final = st.text_input("Fornecedor final", value=safe_str(r["fornecedor_sugerido"]), key=f"comp_forn_{r['id_requisicao']}")
-            data_compra = st.date_input("Data da compra", key=f"comp_data_{r['id_requisicao']}")
-            prev_entrega = st.date_input("Previsão de entrega", key=f"comp_prev_{r['id_requisicao']}")
-            obs = st.text_area("Observação compras", key=f"comp_obs_{r['id_requisicao']}")
-            if st.button("Marcar como comprado", key=f"comp_btn_{r['id_requisicao']}", type="primary", use_container_width=True):
-                row_n = find_row_number_by_id(sh, "requisicoes", "id_requisicao", safe_str(r["id_requisicao"]))
-                now = now_br()
-                update_cell_by_row_number(
-                    sh, "requisicoes", row_n, REQ_COLS,
-                    {
-                        "status": "COMPRADO",
-                        "comprador": user["usuario"],
-                        "fornecedor_final": fornecedor_final,
-                        "data_compra": data_compra.strftime("%d/%m/%Y"),
-                        "previsao_entrega": prev_entrega.strftime("%d/%m/%Y"),
-                        "observacao_compras": obs,
-                        "ultima_atualizacao": fmt_dt(now),
-                    },
-                )
-                write_log(sh, user["usuario"], safe_str(r["id_requisicao"]), "comprar", "APROVADO", "COMPRADO", obs)
-                st.success("Compra registrada.")
-                st.cache_resource.clear()
-                st.rerun()
+        request_card(r, "Registre compra e previsão de entrega")
+        forn_final = st.text_input("Fornecedor final", value=safe_str(r["fornecedor_sugerido"]), key=f"buy_forn_{r['id_requisicao']}")
+        c1, c2 = st.columns(2)
+        data_compra = c1.date_input("Data da compra", key=f"buy_dt_{r['id_requisicao']}")
+        prev = c2.date_input("Previsão de entrega", key=f"buy_prev_{r['id_requisicao']}")
+        obs = st.text_input("Obs. compras", key=f"buy_obs_{r['id_requisicao']}")
+        if st.button("Marcar como comprado", key=f"buy_btn_{r['id_requisicao']}", type="primary", use_container_width=True):
+            row_n = find_row_number_by_id(sh, "requisicoes", "id_requisicao", safe_str(r["id_requisicao"]))
+            now = now_br()
+            update_cell_by_row_number(sh, "requisicoes", row_n, REQ_COLS, {"status": "COMPRADO", "comprador": user["usuario"], "fornecedor_final": forn_final, "data_compra": data_compra.strftime("%d/%m/%Y"), "previsao_entrega": prev.strftime("%d/%m/%Y"), "observacao_compras": obs, "ultima_atualizacao": fmt_dt(now)})
+            write_log(sh, user["usuario"], safe_str(r["id_requisicao"]), "comprar", "APROVADO", "COMPRADO", obs)
+            st.success("Compra registrada.")
+            st.cache_resource.clear()
+            st.rerun()
+        st.divider()
 
 
 def render_receiving(sh, req_df: pd.DataFrame, user: Dict):
@@ -758,68 +535,68 @@ def render_receiving(sh, req_df: pd.DataFrame, user: Dict):
     if df.empty:
         st.success("Não há itens aguardando recebimento.")
         return
-
-    only_today = st.checkbox("Mostrar apenas entregas previstas para hoje")
-    if only_today:
-        today = now_br().strftime("%d/%m/%Y")
+    c1, c2 = st.columns(2)
+    filtro = c1.selectbox("Filtro rápido", ["Todos", "Previstos hoje", "Atrasados"])
+    busca = c2.text_input("Buscar item ou fornecedor")
+    if filtro == "Previstos hoje":
+        today = fmt_date(now_br())
         df = df[df["previsao_entrega"].astype(str) == today]
-
+    elif filtro == "Atrasados":
+        df = df[df.apply(lambda r: delivery_flags(r) == "overdue", axis=1)]
+    if busca:
+        df = df[df["produto"].astype(str).str.contains(busca, case=False, na=False) | df["fornecedor_final"].astype(str).str.contains(busca, case=False, na=False) | df["fornecedor_sugerido"].astype(str).str.contains(busca, case=False, na=False)]
+    if df.empty:
+        st.info("Nenhum pedido encontrado.")
+        return
     for _, r in df.iloc[::-1].iterrows():
-        request_card(r)
-        with st.expander(f"Confirmar recebimento | {safe_str(r['id_requisicao'])}", expanded=False):
-            qtd_default = safe_str(r["quantidade_aprovada"]) or safe_str(r["quantidade_solicitada"]) or "0"
-            try:
-                qtd_default = float(str(qtd_default).replace(",", "."))
-            except Exception:
-                qtd_default = 0.0
-            qtd = st.number_input("Quantidade recebida", min_value=0.0, value=qtd_default, key=f"rec_qtd_{r['id_requisicao']}")
-            obs = st.text_area("Observação do recebimento", key=f"rec_obs_{r['id_requisicao']}")
-            if st.button("Confirmar recebimento", key=f"rec_btn_{r['id_requisicao']}", type="primary", use_container_width=True):
-                row_n = find_row_number_by_id(sh, "requisicoes", "id_requisicao", safe_str(r["id_requisicao"]))
-                now = now_br()
-                update_cell_by_row_number(
-                    sh, "requisicoes", row_n, REQ_COLS,
-                    {
-                        "status": "RECEBIDO",
-                        "recebedor": user["usuario"],
-                        "data_recebimento": fmt_dt(now),
-                        "quantidade_recebida": qtd,
-                        "observacao_recebimento": obs,
-                        "ultima_atualizacao": fmt_dt(now),
-                    },
-                )
-                write_log(sh, user["usuario"], safe_str(r["id_requisicao"]), "receber", "COMPRADO", "RECEBIDO", obs)
-                st.success("Recebimento confirmado.")
-                st.cache_resource.clear()
-                st.rerun()
+        request_card(r, "Confirme o recebimento na chegada da mercadoria")
+        qty_default = safe_str(r["quantidade_aprovada"]) or safe_str(r["quantidade_solicitada"]) or "0"
+        try:
+            qty_default = float(str(qty_default).replace(",", "."))
+        except Exception:
+            qty_default = 0.0
+        c1, c2 = st.columns(2)
+        qtd = c1.number_input("Qtd. recebida", min_value=0.0, value=qty_default, key=f"rec_qtd_{r['id_requisicao']}")
+        obs = c2.text_input("Obs. recebimento", key=f"rec_obs_{r['id_requisicao']}")
+        if st.button("Confirmar recebimento", key=f"rec_btn_{r['id_requisicao']}", type="primary", use_container_width=True):
+            row_n = find_row_number_by_id(sh, "requisicoes", "id_requisicao", safe_str(r["id_requisicao"]))
+            now = now_br()
+            update_cell_by_row_number(sh, "requisicoes", row_n, REQ_COLS, {"status": "RECEBIDO", "recebedor": user["usuario"], "data_recebimento": fmt_dt(now), "quantidade_recebida": qtd, "observacao_recebimento": obs, "ultima_atualizacao": fmt_dt(now)})
+            write_log(sh, user["usuario"], safe_str(r["id_requisicao"]), "receber", "COMPRADO", "RECEBIDO", obs)
+            st.success("Recebimento confirmado.")
+            st.cache_resource.clear()
+            st.rerun()
+        st.divider()
 
 
 def render_panel(req_df: pd.DataFrame, user: Dict):
-    st.subheader("Acompanhamento")
+    st.subheader("Acompanhamento geral")
     df = req_df.copy()
-    c1, c2, c3 = st.columns(3)
-    with c1:
-        kpi_box("Pendente aprovação", str((df["status"] == "PENDENTE_APROVACAO").sum()))
-    with c2:
-        kpi_box("Aprovado", str((df["status"] == "APROVADO").sum()))
-    with c3:
-        kpi_box("Aguardando recebimento", str((df["status"] == "COMPRADO").sum()))
-
-    busca = st.text_input("Buscar pedido por item, fornecedor ou ID")
-    status = st.multiselect("Filtrar status", STATUS_FLOW)
+    overdue = sum(1 for _, r in df.iterrows() if delivery_flags(r) == "overdue")
+    today_count = sum(1 for _, r in df.iterrows() if delivery_flags(r) == "today")
+    c1, c2, c3, c4 = st.columns(4)
+    with c1: kpi_box("Pendente", str((df["status"] == "PENDENTE_APROVACAO").sum()))
+    with c2: kpi_box("Aprovado", str((df["status"] == "APROVADO").sum()))
+    with c3: kpi_box("Hoje", str(today_count))
+    with c4: kpi_box("Atrasado", str(overdue))
+    c1, c2 = st.columns(2)
+    busca = c1.text_input("Buscar item, fornecedor ou ID")
+    status = c2.multiselect("Status", STATUS_FLOW)
     if busca:
-        df = df[
-            df["produto"].astype(str).str.contains(busca, case=False, na=False) |
-            df["fornecedor_sugerido"].astype(str).str.contains(busca, case=False, na=False) |
-            df["fornecedor_final"].astype(str).str.contains(busca, case=False, na=False) |
-            df["id_requisicao"].astype(str).str.contains(busca, case=False, na=False)
-        ]
+        df = df[df["produto"].astype(str).str.contains(busca, case=False, na=False) | df["fornecedor_sugerido"].astype(str).str.contains(busca, case=False, na=False) | df["fornecedor_final"].astype(str).str.contains(busca, case=False, na=False) | df["id_requisicao"].astype(str).str.contains(busca, case=False, na=False)]
     if status:
         df = df[df["status"].isin(status)]
+    sort_mode = st.selectbox("Ordenação", ["Mais recentes", "Entregas atrasadas primeiro", "Previstos hoje primeiro"])
+    if sort_mode == "Entregas atrasadas primeiro":
+        df = df.assign(_score=df.apply(lambda r: 0 if delivery_flags(r) == "overdue" else (1 if delivery_flags(r) == "today" else 2), axis=1)).sort_values("_score")
+    elif sort_mode == "Previstos hoje primeiro":
+        df = df.assign(_score=df.apply(lambda r: 0 if delivery_flags(r) == "today" else (1 if delivery_flags(r) == "overdue" else 2), axis=1)).sort_values("_score")
+    else:
+        df = df.iloc[::-1]
     if df.empty:
         st.info("Nenhum resultado encontrado.")
         return
-    for _, r in df.iloc[::-1].iterrows():
+    for _, r in df.iterrows():
         request_card(r)
 
 
@@ -828,10 +605,8 @@ def render_admin(sh, itens_df: pd.DataFrame, users_df: pd.DataFrame, req_df: pd.
         st.info("Acesso exclusivo do administrador.")
         return
     st.subheader("Admin")
-    tabs = st.tabs(["Usuários", "Itens", "Exportação"])
-
+    tabs = st.tabs(["Novo usuário", "Usuários", "Itens", "Exportação"])
     with tabs[0]:
-        st.caption("Cadastre usuários na aba usuarios do Google Sheets ou use o bloco abaixo.")
         with st.form("novo_usuario"):
             c1, c2 = st.columns(2)
             usuario = c1.text_input("Usuário")
@@ -842,7 +617,7 @@ def render_admin(sh, itens_df: pd.DataFrame, users_df: pd.DataFrame, req_df: pd.
             c5, c6 = st.columns(2)
             setor = c5.text_input("Setor")
             ativo = c6.selectbox("Ativo", ["SIM", "NAO"])
-            ok = st.form_submit_button("Adicionar usuário")
+            ok = st.form_submit_button("Adicionar usuário", use_container_width=True, type="primary")
         if ok:
             if not usuario.strip() or not senha.strip():
                 st.error("Usuário e senha são obrigatórios.")
@@ -853,30 +628,14 @@ def render_admin(sh, itens_df: pd.DataFrame, users_df: pd.DataFrame, req_df: pd.
                 st.success("Usuário criado.")
                 st.cache_resource.clear()
                 st.rerun()
-        st.dataframe(users_df, use_container_width=True, hide_index=True)
-
     with tabs[1]:
-        st.caption("Os itens já vêm da sua planilha. Use a aba itens para manutenção completa.")
-        st.dataframe(itens_df.head(300), use_container_width=True, hide_index=True)
-
+        st.dataframe(users_df, use_container_width=True, hide_index=True)
     with tabs[2]:
+        st.dataframe(itens_df.head(300), use_container_width=True, hide_index=True)
+    with tabs[3]:
         c1, c2 = st.columns(2)
-        with c1:
-            st.download_button(
-                "Baixar requisições em CSV",
-                data=req_df.to_csv(index=False).encode("utf-8"),
-                file_name="requisicoes_yvora.csv",
-                mime="text/csv",
-                use_container_width=True,
-            )
-        with c2:
-            st.download_button(
-                "Baixar itens em CSV",
-                data=itens_df.to_csv(index=False).encode("utf-8"),
-                file_name="itens_yvora.csv",
-                mime="text/csv",
-                use_container_width=True,
-            )
+        c1.download_button("Baixar requisições CSV", data=req_df.to_csv(index=False).encode("utf-8"), file_name="requisicoes_yvora.csv", mime="text/csv", use_container_width=True)
+        c2.download_button("Baixar itens CSV", data=itens_df.to_csv(index=False).encode("utf-8"), file_name="itens_yvora.csv", mime="text/csv", use_container_width=True)
 
 
 def login_screen(users_df: pd.DataFrame):
@@ -904,28 +663,20 @@ def main():
     st.set_page_config(page_title=APP_TITLE, page_icon="🧾", layout="centered")
     inject_css()
     show_header()
-
     try:
-        sh, itens_df, users_df, req_df, fornecedores_df, parametros_df = load_data()
+        sh, itens_df, users_df, req_df = load_data()
     except Exception as e:
         st.error(f"Falha ao conectar no Google Sheets: {e}")
-        st.info("Confira o arquivo README e o secrets_example.toml para configurar o acesso.")
+        st.info("Confira o README e o secrets_example.toml para configurar o acesso.")
         return
-
-    itens_df = coerce_itens(itens_df)
-    users_df = load_users_df(users_df)
-    req_df = coerce_requisicoes(req_df)
-
-    st.sidebar.markdown("### Navegação")
     user = st.session_state.get("yv_user")
+    st.sidebar.markdown("### Navegação")
     if not user:
         login_screen(users_df)
-        st.stop()
-
-    st.sidebar.success(f'{user.get("nome", user["usuario"])}')
+        return
+    st.sidebar.success(user.get("nome", user["usuario"]))
     st.sidebar.caption(" | ".join(user.get("profiles", [])) or "sem perfil")
     logout_button()
-
     menu = ["Início", "Nova requisição", "Minhas requisições", "Painel"]
     if can_any(user, ["aprovador", "admin"]):
         menu.append("Aprovações")
@@ -935,11 +686,8 @@ def main():
         menu.append("Recebimento")
     if has_profile(user, "admin"):
         menu.append("Admin")
-
-    menu_label_map = {mobile_menu_label(x): x for x in menu}
-    selected_label = st.sidebar.radio("Ir para", list(menu_label_map.keys()))
-    selected = menu_label_map[selected_label]
-
+    menu_map = {mobile_menu_label(m): m for m in menu}
+    selected = menu_map[st.sidebar.radio("Ir para", list(menu_map.keys()))]
     if selected == "Início":
         render_home(req_df, user)
     elif selected == "Nova requisição":
