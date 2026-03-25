@@ -486,9 +486,15 @@ def ensure_worksheets(sh) -> None:
                 ws.append_row(["tipo", "valor"])
 
 
-def ws_to_df(sh, title: str) -> pd.DataFrame:
+def ws_to_df(sh, title: str, include_row_number: bool = False) -> pd.DataFrame:
     records = sh.worksheet(title).get_all_records(default_blank="")
-    return pd.DataFrame(records) if records else pd.DataFrame()
+    df = pd.DataFrame(records) if records else pd.DataFrame()
+    if include_row_number:
+        if df.empty:
+            df = pd.DataFrame(columns=["_sheet_row_number"])
+        else:
+            df["_sheet_row_number"] = range(2, len(df) + 2)
+    return df
 
 
 def coerce(df: pd.DataFrame, cols: List[str]) -> pd.DataFrame:
@@ -500,7 +506,7 @@ def coerce(df: pd.DataFrame, cols: List[str]) -> pd.DataFrame:
     return df[cols].fillna("")
 
 
-@st.cache_data(ttl=90, show_spinner=False)
+@st.cache_data(ttl=180, show_spinner=False)
 def load_data_cached():
     sh = get_gsheet()
     ensure_worksheets(sh)
@@ -511,7 +517,7 @@ def load_data_cached():
     usuarios = coerce(ws_to_df(sh, "usuarios"), USER_COLS)
     usuarios = usuarios[usuarios["ativo"].astype(str).str.upper().ne("NAO")]
 
-    req = coerce(ws_to_df(sh, "requisicoes"), REQ_COLS)
+    req = coerce(ws_to_df(sh, "requisicoes", include_row_number=True), REQ_COLS + ["_sheet_row_number"])
     forn = ws_to_df(sh, "fornecedores")
     params = ws_to_df(sh, "parametros")
     return itens, usuarios, req, forn, params
@@ -526,21 +532,22 @@ def append_row(sh, title: str, row: List) -> None:
 
 
 def update_row_by_number(
-    sh, title: str, row_number: int, headers: List[str], data: Dict[str, str]
+    sh, title: str, row_number: int, headers: List[str], data: Dict[str, str], current_row: Optional[Dict[str, str]] = None
 ) -> None:
     ws = sh.worksheet(title)
-    current = ws.row_values(row_number)
-    if len(current) < len(headers):
-        current += [""] * (len(headers) - len(current))
-
-    for idx, header in enumerate(headers):
+    merged = {}
+    if current_row:
+        merged.update({h: safe_str(current_row.get(h, "")) for h in headers})
+    for header in headers:
         if header in data:
-            current[idx] = data[header]
+            merged[header] = data[header]
+        elif header not in merged:
+            merged[header] = ""
 
-    end_col_letter = "AE"
+    values = [merged.get(h, "") for h in headers]
     ws.update(
-        f"A{row_number}:{end_col_letter}{row_number}",
-        [current[:len(headers)]],
+        values=[values],
+        range_name=f"A{row_number}",
         value_input_option="USER_ENTERED",
     )
 
@@ -893,20 +900,26 @@ def render_approvals(sh, req_df: pd.DataFrame, user: Dict) -> None:
     st.subheader("Aprovações")
     show_flash()
 
-    df = req_df[req_df["status"] == "PENDENTE_APROVACAO"].copy()
+    df = req_df[req_df["status"].astype(str).str.strip() == "PENDENTE_APROVACAO"].copy()
     if df.empty:
         st.success("Não há itens pendentes de aprovação.")
         return
 
-    c1, c2 = st.columns(2)
+    c1, c2, c3 = st.columns(3)
     setor = c1.selectbox(
         "Setor",
         ["Todos"] + sorted([x for x in df["setor"].astype(str).unique().tolist() if x]),
     )
-    prioridade = c2.selectbox("Prioridade", ["Todas", "NORMAL", "URGENTE", "CRITICA"])
+    categoria = c2.selectbox(
+        "Categoria",
+        ["Todas"] + sorted([x for x in df["categoria"].astype(str).unique().tolist() if x]),
+    )
+    prioridade = c3.selectbox("Prioridade", ["Todas", "NORMAL", "URGENTE", "CRITICA"])
 
     if setor != "Todos":
         df = df[df["setor"].astype(str) == setor]
+    if categoria != "Todas":
+        df = df[df["categoria"].astype(str) == categoria]
     if prioridade != "Todas":
         df = df[df["prioridade"].astype(str) == prioridade]
 
@@ -933,10 +946,12 @@ def render_approvals(sh, req_df: pd.DataFrame, user: Dict) -> None:
             type="primary",
             use_container_width=True,
         ):
-            row_n = find_row_number_by_id(
-                sh, "requisicoes", "id_requisicao", safe_str(r["id_requisicao"])
-            )
-            if row_n is None:
+            row_n = int(r.get("_sheet_row_number", 0) or 0)
+            if row_n <= 1:
+                row_n = find_row_number_by_id(
+                    sh, "requisicoes", "id_requisicao", safe_str(r["id_requisicao"])
+                )
+            if not row_n:
                 st.error("Requisição não encontrada.")
                 return
 
@@ -954,6 +969,7 @@ def render_approvals(sh, req_df: pd.DataFrame, user: Dict) -> None:
                     "quantidade_aprovada": qty_aprov,
                     "ultima_atualizacao": fmt_dt(now),
                 },
+                current_row=r.to_dict(),
             )
             write_log(
                 sh,
@@ -978,10 +994,12 @@ def render_approvals(sh, req_df: pd.DataFrame, user: Dict) -> None:
                 st.error("Informe a observação para reprovar.")
                 return
 
-            row_n = find_row_number_by_id(
-                sh, "requisicoes", "id_requisicao", safe_str(r["id_requisicao"])
-            )
-            if row_n is None:
+            row_n = int(r.get("_sheet_row_number", 0) or 0)
+            if row_n <= 1:
+                row_n = find_row_number_by_id(
+                    sh, "requisicoes", "id_requisicao", safe_str(r["id_requisicao"])
+                )
+            if not row_n:
                 st.error("Requisição não encontrada.")
                 return
 
@@ -998,6 +1016,7 @@ def render_approvals(sh, req_df: pd.DataFrame, user: Dict) -> None:
                     "observacao_aprovacao": obs,
                     "ultima_atualizacao": fmt_dt(now),
                 },
+                current_row=r.to_dict(),
             )
             write_log(
                 sh,
@@ -1024,20 +1043,26 @@ def render_buying(sh, req_df: pd.DataFrame, user: Dict) -> None:
     st.subheader("Compras")
     show_flash()
 
-    df = req_df[req_df["status"] == "APROVADO"].copy()
+    df = req_df[req_df["status"].astype(str).str.strip() == "APROVADO"].copy()
     if df.empty:
         st.success("Não há requisições aprovadas aguardando compra.")
         return
 
-    c1, c2 = st.columns(2)
+    c1, c2, c3 = st.columns(3)
     fornecedor = c1.selectbox(
         "Fornecedor",
         ["Todos"] + sorted([x for x in df["fornecedor_sugerido"].astype(str).unique().tolist() if x]),
     )
-    prioridade = c2.selectbox("Prioridade", ["Todas", "NORMAL", "URGENTE", "CRITICA"])
+    categoria = c2.selectbox(
+        "Categoria",
+        ["Todas"] + sorted([x for x in df["categoria"].astype(str).unique().tolist() if x]),
+    )
+    prioridade = c3.selectbox("Prioridade", ["Todas", "NORMAL", "URGENTE", "CRITICA"])
 
     if fornecedor != "Todos":
         df = df[df["fornecedor_sugerido"].astype(str) == fornecedor]
+    if categoria != "Todas":
+        df = df[df["categoria"].astype(str) == categoria]
     if prioridade != "Todas":
         df = df[df["prioridade"].astype(str) == prioridade]
 
@@ -1066,10 +1091,12 @@ def render_buying(sh, req_df: pd.DataFrame, user: Dict) -> None:
             type="primary",
             use_container_width=True,
         ):
-            row_n = find_row_number_by_id(
-                sh, "requisicoes", "id_requisicao", safe_str(r["id_requisicao"])
-            )
-            if row_n is None:
+            row_n = int(r.get("_sheet_row_number", 0) or 0)
+            if row_n <= 1:
+                row_n = find_row_number_by_id(
+                    sh, "requisicoes", "id_requisicao", safe_str(r["id_requisicao"])
+                )
+            if not row_n:
                 st.error("Requisição não encontrada.")
                 return
 
@@ -1088,6 +1115,7 @@ def render_buying(sh, req_df: pd.DataFrame, user: Dict) -> None:
                     "observacao_compras": obs,
                     "ultima_atualizacao": fmt_dt(now),
                 },
+                current_row=r.to_dict(),
             )
             write_log(
                 sh,
