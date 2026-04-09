@@ -1,7 +1,8 @@
 import os
 import math
+import time
 from datetime import datetime, timedelta
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Tuple
 
 import pandas as pd
 import streamlit as st
@@ -9,10 +10,12 @@ from streamlit_cookies_manager import EncryptedCookieManager
 
 try:
     import gspread
+    from gspread.exceptions import APIError
     from google.oauth2.service_account import Credentials
 except Exception:
     gspread = None
     Credentials = None
+    APIError = Exception
 
 
 APP_TITLE = "YVORA | Requisições"
@@ -43,6 +46,17 @@ ITEM_COLS = [
     "contato_fornecedor",
     "preco_referencia",
     "estoque_minimo",
+    "ativo",
+    "observacao",
+]
+
+FORN_COLS = [
+    "fornecedor",
+    "categoria_principal",
+    "contato",
+    "telefone",
+    "email",
+    "prazo_medio_dias",
     "ativo",
     "observacao",
 ]
@@ -151,6 +165,19 @@ def safe_str(x) -> str:
     if isinstance(x, float) and math.isnan(x):
         return ""
     return str(x).strip()
+
+
+def safe_float(x, default: float = 0.0) -> float:
+    try:
+        s = safe_str(x).replace(".", "").replace(",", ".")
+        if s == "":
+            return default
+        return float(s)
+    except Exception:
+        try:
+            return float(str(x).replace(",", "."))
+        except Exception:
+            return default
 
 
 def show_flash() -> None:
@@ -371,6 +398,14 @@ def can_any(user: Dict, profiles: List[str]) -> bool:
     return any(has_profile(user, p) for p in profiles)
 
 
+def can_manage_items(user: Dict) -> bool:
+    return can_any(user, ["admin", "cadastro_itens"])
+
+
+def can_manage_suppliers(user: Dict) -> bool:
+    return can_any(user, ["admin", "cadastro_fornecedores"])
+
+
 def status_badge(status: str) -> str:
     s = safe_str(status)
     return f"<span class='yv-status status-{s.lower()}'>{s.replace('_', ' ')}</span>"
@@ -436,6 +471,24 @@ def try_restore_login_from_cookie(cookies, users_df: pd.DataFrame) -> Optional[D
     return row
 
 
+def api_retry(func, retries: int = 3, wait_seconds: float = 1.0):
+    last_error = None
+    for attempt in range(retries):
+        try:
+            return func()
+        except APIError as e:
+            last_error = e
+            if attempt == retries - 1:
+                raise
+            time.sleep(wait_seconds * (attempt + 1))
+        except Exception as e:
+            last_error = e
+            if attempt == retries - 1:
+                raise
+            time.sleep(wait_seconds * (attempt + 1))
+    raise last_error
+
+
 @st.cache_resource(show_spinner=False)
 def get_gsheet():
     if gspread is None or Credentials is None:
@@ -457,44 +510,49 @@ def get_gsheet():
 
 
 def ensure_worksheets(sh) -> None:
-    current = {ws.title for ws in sh.worksheets()}
+    current = {ws.title for ws in api_retry(lambda: sh.worksheets())}
     for title in REQUIRED_SHEETS:
         if title not in current:
-            ws = sh.add_worksheet(title=title, rows=1000, cols=40)
+            ws = api_retry(lambda: sh.add_worksheet(title=title, rows=1000, cols=40))
             if title == "itens":
-                ws.append_row(ITEM_COLS)
+                api_retry(lambda: ws.append_row(ITEM_COLS))
             elif title == "usuarios":
-                ws.append_row(USER_COLS)
+                api_retry(lambda: ws.append_row(USER_COLS))
             elif title == "requisicoes":
-                ws.append_row(REQ_COLS)
+                api_retry(lambda: ws.append_row(REQ_COLS))
             elif title == "log_alteracoes":
-                ws.append_row(LOG_COLS)
+                api_retry(lambda: ws.append_row(LOG_COLS))
             elif title == "fornecedores":
-                ws.append_row(
-                    [
-                        "fornecedor",
-                        "categoria_principal",
-                        "contato",
-                        "telefone",
-                        "email",
-                        "prazo_medio_dias",
-                        "ativo",
-                        "observacao",
-                    ]
-                )
+                api_retry(lambda: ws.append_row(FORN_COLS))
             elif title == "parametros":
-                ws.append_row(["tipo", "valor"])
+                api_retry(lambda: ws.append_row(["tipo", "valor"]))
 
 
-def ws_to_df(sh, title: str, include_row_number: bool = False) -> pd.DataFrame:
-    records = sh.worksheet(title).get_all_records(default_blank="")
-    df = pd.DataFrame(records) if records else pd.DataFrame()
+def worksheet_to_df(sh, title: str, include_row_number: bool = False) -> pd.DataFrame:
+    ws = sh.worksheet(title)
+    values = api_retry(lambda: ws.get_all_values())
+    if not values:
+        return pd.DataFrame(columns=(["_sheet_row_number"] if include_row_number else []))
+
+    headers = values[0]
+    rows = values[1:]
+
+    if not rows:
+        df = pd.DataFrame(columns=headers)
+    else:
+        normalized_rows = []
+        for row in rows:
+            if len(row) < len(headers):
+                row = row + [""] * (len(headers) - len(row))
+            elif len(row) > len(headers):
+                row = row[: len(headers)]
+            normalized_rows.append(row)
+        df = pd.DataFrame(normalized_rows, columns=headers)
+
     if include_row_number:
-        if df.empty:
-            df = pd.DataFrame(columns=["_sheet_row_number"])
-        else:
-            df["_sheet_row_number"] = range(2, len(df) + 2)
-    return df
+        df["_sheet_row_number"] = range(2, len(df) + 2)
+
+    return df.fillna("")
 
 
 def coerce(df: pd.DataFrame, cols: List[str]) -> pd.DataFrame:
@@ -506,20 +564,26 @@ def coerce(df: pd.DataFrame, cols: List[str]) -> pd.DataFrame:
     return df[cols].fillna("")
 
 
-@st.cache_data(ttl=180, show_spinner=False)
+@st.cache_data(ttl=90, show_spinner=False)
 def load_data_cached():
     sh = get_gsheet()
     ensure_worksheets(sh)
 
-    itens = coerce(ws_to_df(sh, "itens"), ITEM_COLS)
+    itens = coerce(worksheet_to_df(sh, "itens"), ITEM_COLS)
     itens = itens[itens["ativo"].astype(str).str.upper().ne("NAO")]
 
-    usuarios = coerce(ws_to_df(sh, "usuarios"), USER_COLS)
+    usuarios = coerce(worksheet_to_df(sh, "usuarios"), USER_COLS)
     usuarios = usuarios[usuarios["ativo"].astype(str).str.upper().ne("NAO")]
 
-    req = coerce(ws_to_df(sh, "requisicoes", include_row_number=True), REQ_COLS + ["_sheet_row_number"])
-    forn = ws_to_df(sh, "fornecedores")
-    params = ws_to_df(sh, "parametros")
+    req = coerce(
+        worksheet_to_df(sh, "requisicoes", include_row_number=True),
+        REQ_COLS + ["_sheet_row_number"],
+    )
+
+    forn = coerce(worksheet_to_df(sh, "fornecedores"), FORN_COLS)
+    forn = forn[forn["ativo"].astype(str).str.upper().ne("NAO")]
+
+    params = worksheet_to_df(sh, "parametros")
     return itens, usuarios, req, forn, params
 
 
@@ -528,11 +592,32 @@ def clear_caches() -> None:
 
 
 def append_row(sh, title: str, row: List) -> None:
-    sh.worksheet(title).append_row(row, value_input_option="USER_ENTERED")
+    ws = sh.worksheet(title)
+    api_retry(lambda: ws.append_row(row, value_input_option="USER_ENTERED"))
+
+
+def append_rows(sh, title: str, rows: List[List]) -> None:
+    if not rows:
+        return
+    ws = sh.worksheet(title)
+
+    def _run():
+        if hasattr(ws, "append_rows"):
+            return ws.append_rows(rows, value_input_option="USER_ENTERED")
+        for row in rows:
+            ws.append_row(row, value_input_option="USER_ENTERED")
+        return None
+
+    api_retry(_run)
 
 
 def update_row_by_number(
-    sh, title: str, row_number: int, headers: List[str], data: Dict[str, str], current_row: Optional[Dict[str, str]] = None
+    sh,
+    title: str,
+    row_number: int,
+    headers: List[str],
+    data: Dict[str, str],
+    current_row: Optional[Dict[str, str]] = None,
 ) -> None:
     ws = sh.worksheet(title)
     merged = {}
@@ -545,11 +630,58 @@ def update_row_by_number(
             merged[header] = ""
 
     values = [merged.get(h, "") for h in headers]
-    ws.update(
-        values=[values],
-        range_name=f"A{row_number}",
-        value_input_option="USER_ENTERED",
+    api_retry(
+        lambda: ws.update(
+            values=[values],
+            range_name=f"A{row_number}",
+            value_input_option="USER_ENTERED",
+        )
     )
+
+
+def batch_update_rows(
+    sh,
+    title: str,
+    headers: List[str],
+    updates: List[Tuple[int, Dict[str, str], Optional[Dict[str, str]]]],
+) -> None:
+    if not updates:
+        return
+
+    ws = sh.worksheet(title)
+    batch_payload = []
+
+    for row_number, data, current_row in updates:
+        merged = {}
+        if current_row:
+            merged.update({h: safe_str(current_row.get(h, "")) for h in headers})
+        for header in headers:
+            if header in data:
+                merged[header] = data[header]
+            elif header not in merged:
+                merged[header] = ""
+
+        values = [merged.get(h, "") for h in headers]
+        last_col = chr(ord("A") + len(headers) - 1)
+        batch_payload.append(
+            {
+                "range": f"A{row_number}:{last_col}{row_number}",
+                "values": [values],
+            }
+        )
+
+    def _run():
+        if hasattr(ws, "batch_update"):
+            return ws.batch_update(batch_payload, value_input_option="USER_ENTERED")
+        for item in batch_payload:
+            ws.update(
+                range_name=item["range"],
+                values=item["values"],
+                value_input_option="USER_ENTERED",
+            )
+        return None
+
+    api_retry(_run)
 
 
 def get_next_req_id(req_df: pd.DataFrame) -> str:
@@ -566,20 +698,33 @@ def get_next_req_id(req_df: pd.DataFrame) -> str:
     return f"RC{nxt:06d}"
 
 
+def get_next_item_code(itens_df: pd.DataFrame) -> str:
+    nums: List[int] = []
+    if "cod_item" in itens_df.columns:
+        for v in itens_df["cod_item"].astype(str).tolist():
+            raw = "".join(ch for ch in v if ch.isdigit())
+            if raw:
+                try:
+                    nums.append(int(raw))
+                except Exception:
+                    pass
+    nxt = max(nums) + 1 if nums else 1
+    return f"IT{nxt:05d}"
+
+
 def find_row_number_by_id(
-    sh, title: str, id_col_name: str, target_id: str
+    req_df: pd.DataFrame,
+    target_id: str,
 ) -> Optional[int]:
-    values = sh.worksheet(title).get_all_values()
-    if not values:
+    if req_df.empty:
         return None
-    headers = values[0]
-    if id_col_name not in headers:
+    match = req_df[req_df["id_requisicao"].astype(str).str.strip() == safe_str(target_id)]
+    if match.empty:
         return None
-    idx = headers.index(id_col_name)
-    for i, row in enumerate(values[1:], start=2):
-        if idx < len(row) and safe_str(row[idx]) == safe_str(target_id):
-            return i
-    return None
+    try:
+        return int(match.iloc[0]["_sheet_row_number"])
+    except Exception:
+        return None
 
 
 def write_log(
@@ -597,6 +742,28 @@ def write_log(
         "log_alteracoes",
         [fmt_date(now), now.strftime("%H:%M:%S"), usuario, req_id, acao, anterior, novo, obs],
     )
+
+
+def write_logs_batch(
+    sh,
+    logs: List[Tuple[str, str, str, str, str, str]],
+) -> None:
+    if not logs:
+        return
+    now = now_br()
+    rows = []
+    for usuario, req_id, acao, anterior, novo, obs in logs:
+        rows.append([
+            fmt_date(now),
+            now.strftime("%H:%M:%S"),
+            usuario,
+            req_id,
+            acao,
+            anterior,
+            novo,
+            obs,
+        ])
+    append_rows(sh, "log_alteracoes", rows)
 
 
 def authenticate(users_df: pd.DataFrame, usuario: str, senha: str) -> Optional[Dict]:
@@ -620,6 +787,7 @@ def mobile_menu_label(name: str) -> str:
         "Compras": "🛒 Compras",
         "Recebimento": "📥 Receber",
         "Painel": "📊 Painel",
+        "Cadastros": "🗂️ Cadastros",
         "Admin": "⚙️ Admin",
     }
     return mapping.get(name, name)
@@ -702,7 +870,7 @@ def render_home(req_df: pd.DataFrame, user: Dict) -> None:
         kpi_box("Atrasados", str(overdue))
 
     st.markdown(
-        "<div class='yv-toolbar'><b>Ações rápidas</b><div class='yv-meta'>Use o menu lateral para solicitar, aprovar, comprar ou receber.</div></div>",
+        "<div class='yv-toolbar'><b>Ações rápidas</b><div class='yv-meta'>Use o menu lateral para solicitar, aprovar, comprar, receber ou cadastrar.</div></div>",
         unsafe_allow_html=True,
     )
 
@@ -827,12 +995,13 @@ def render_new_request(
         st.rerun()
 
 
-def cancel_my_request(sh, req_id: str, user: Dict) -> None:
-    row_n = find_row_number_by_id(sh, "requisicoes", "id_requisicao", req_id)
+def cancel_my_request(sh, req_df: pd.DataFrame, req_id: str, user: Dict) -> None:
+    row_n = find_row_number_by_id(req_df, req_id)
     if row_n is None:
         st.error("Solicitação não encontrada.")
         return
 
+    current = req_df[req_df["id_requisicao"] == req_id].iloc[0].to_dict()
     now = now_br()
     update_row_by_number(
         sh,
@@ -843,6 +1012,7 @@ def cancel_my_request(sh, req_id: str, user: Dict) -> None:
             "status": "CANCELADO",
             "ultima_atualizacao": fmt_dt(now),
         },
+        current_row=current,
     )
     write_log(
         sh,
@@ -889,7 +1059,7 @@ def render_my_requests(sh, req_df: pd.DataFrame, user: Dict) -> None:
                 key=f"cancel_{safe_str(r['id_requisicao'])}",
                 use_container_width=True,
             ):
-                cancel_my_request(sh=sh, req_id=safe_str(r["id_requisicao"]), user=user)
+                cancel_my_request(sh=sh, req_df=req_df, req_id=safe_str(r["id_requisicao"]), user=user)
 
 
 def render_approvals(sh, req_df: pd.DataFrame, user: Dict) -> None:
@@ -930,28 +1100,31 @@ def render_approvals(sh, req_df: pd.DataFrame, user: Dict) -> None:
         except Exception:
             qty_default = 0.0
 
-        c1, c2 = st.columns(2)
-        qty_aprov = c1.number_input(
-            "Qtd. aprovada",
-            min_value=0.0,
-            value=qty_default,
-            key=f"ap_qtd_{r['id_requisicao']}",
-        )
-        obs = c2.text_input("Obs. aprovação", key=f"ap_obs_{r['id_requisicao']}")
+        form_key = f"approval_form_{r['id_requisicao']}"
+        with st.form(form_key):
+            c1, c2 = st.columns(2)
+            qty_aprov = c1.number_input(
+                "Qtd. aprovada",
+                min_value=0.0,
+                value=qty_default,
+                key=f"ap_qtd_{r['id_requisicao']}",
+            )
+            obs = c2.text_input("Obs. aprovação", key=f"ap_obs_{r['id_requisicao']}")
 
-        b1, b2 = st.columns(2)
-        if b1.button(
-            "Aprovar",
-            key=f"ap_ok_{r['id_requisicao']}",
-            type="primary",
-            use_container_width=True,
-        ):
+            b1, b2 = st.columns(2)
+            approve = b1.form_submit_button(
+                "Aprovar",
+                type="primary",
+                use_container_width=True,
+            )
+            reject = b2.form_submit_button(
+                "Reprovar",
+                use_container_width=True,
+            )
+
+        if approve:
             row_n = int(r.get("_sheet_row_number", 0) or 0)
             if row_n <= 1:
-                row_n = find_row_number_by_id(
-                    sh, "requisicoes", "id_requisicao", safe_str(r["id_requisicao"])
-                )
-            if not row_n:
                 st.error("Requisição não encontrada.")
                 return
 
@@ -985,21 +1158,13 @@ def render_approvals(sh, req_df: pd.DataFrame, user: Dict) -> None:
             st.session_state["flash_type"] = "success"
             st.rerun()
 
-        if b2.button(
-            "Reprovar",
-            key=f"ap_no_{r['id_requisicao']}",
-            use_container_width=True,
-        ):
+        if reject:
             if not obs.strip():
                 st.error("Informe a observação para reprovar.")
                 return
 
             row_n = int(r.get("_sheet_row_number", 0) or 0)
             if row_n <= 1:
-                row_n = find_row_number_by_id(
-                    sh, "requisicoes", "id_requisicao", safe_str(r["id_requisicao"])
-                )
-            if not row_n:
                 st.error("Requisição não encontrada.")
                 return
 
@@ -1069,34 +1234,33 @@ def render_buying(sh, req_df: pd.DataFrame, user: Dict) -> None:
     for _, r in df.iloc[::-1].iterrows():
         request_card(r, "Registre a compra e a previsão de entrega")
 
-        forn_final = st.text_input(
-            "Fornecedor final",
-            value=safe_str(r["fornecedor_sugerido"]),
-            key=f"buy_forn_{r['id_requisicao']}",
-        )
+        form_key = f"buy_form_{r['id_requisicao']}"
+        with st.form(form_key):
+            forn_final = st.text_input(
+                "Fornecedor final",
+                value=safe_str(r["fornecedor_sugerido"]),
+                key=f"buy_forn_{r['id_requisicao']}",
+            )
 
-        c1, c2 = st.columns(2)
-        data_compra = c1.date_input("Data da compra", key=f"buy_dt_{r['id_requisicao']}")
-        hora_compra = c2.time_input("Hora da compra", key=f"buy_tm_{r['id_requisicao']}")
+            c1, c2 = st.columns(2)
+            data_compra = c1.date_input("Data da compra", key=f"buy_dt_{r['id_requisicao']}")
+            hora_compra = c2.time_input("Hora da compra", key=f"buy_tm_{r['id_requisicao']}")
 
-        c3, c4 = st.columns(2)
-        prev_data = c3.date_input("Previsão de entrega", key=f"buy_prev_dt_{r['id_requisicao']}")
-        prev_hora = c4.time_input("Hora prevista de entrega", key=f"buy_prev_tm_{r['id_requisicao']}")
+            c3, c4 = st.columns(2)
+            prev_data = c3.date_input("Previsão de entrega", key=f"buy_prev_dt_{r['id_requisicao']}")
+            prev_hora = c4.time_input("Hora prevista de entrega", key=f"buy_prev_tm_{r['id_requisicao']}")
 
-        obs = st.text_input("Obs. compras", key=f"buy_obs_{r['id_requisicao']}")
+            obs = st.text_input("Obs. compras", key=f"buy_obs_{r['id_requisicao']}")
 
-        if st.button(
-            "Marcar como comprado",
-            key=f"buy_btn_{r['id_requisicao']}",
-            type="primary",
-            use_container_width=True,
-        ):
+            bought = st.form_submit_button(
+                "Marcar como comprado",
+                type="primary",
+                use_container_width=True,
+            )
+
+        if bought:
             row_n = int(r.get("_sheet_row_number", 0) or 0)
             if row_n <= 1:
-                row_n = find_row_number_by_id(
-                    sh, "requisicoes", "id_requisicao", safe_str(r["id_requisicao"])
-                )
-            if not row_n:
                 st.error("Requisição não encontrada.")
                 return
 
@@ -1171,7 +1335,7 @@ def render_receiving(sh, req_df: pd.DataFrame, user: Dict) -> None:
         return
 
     st.markdown("### Recebimento em lote por NF")
-    st.caption("Selecione vários itens, informe a NF e confirme tudo de uma vez.")
+    st.caption("Seleciona vários itens e confirma tudo em uma única operação com menos chamadas ao Google Sheets.")
 
     lote_df = df.copy()
     lote_df["label_lote"] = lote_df.apply(
@@ -1179,17 +1343,26 @@ def render_receiving(sh, req_df: pd.DataFrame, user: Dict) -> None:
         axis=1,
     )
 
-    selected_labels = st.multiselect(
-        "Itens para associar à mesma NF",
-        options=lote_df["label_lote"].tolist(),
-        default=[],
-    )
+    with st.form("recebimento_lote_form"):
+        selected_labels = st.multiselect(
+            "Itens para associar à mesma NF",
+            options=lote_df["label_lote"].tolist(),
+            default=[],
+        )
 
-    nf_lote = st.text_input("NF de recebimento")
-    obs_lote = st.text_input("Observação do recebimento em lote")
-    qtd_total_recebida = st.checkbox("Receber quantidades aprovadas integralmente", value=True)
+        c1, c2 = st.columns(2)
+        nf_lote = c1.text_input("NF de recebimento")
+        obs_lote = c2.text_input("Observação do recebimento em lote")
 
-    if st.button("Confirmar recebimento em lote", type="primary", use_container_width=True):
+        qtd_total_recebida = st.checkbox("Receber quantidades aprovadas integralmente", value=True)
+
+        confirm_lote = st.form_submit_button(
+            "Confirmar recebimento em lote",
+            type="primary",
+            use_container_width=True,
+        )
+
+    if confirm_lote:
         if not selected_labels:
             st.error("Selecione pelo menos um item.")
             return
@@ -1197,11 +1370,19 @@ def render_receiving(sh, req_df: pd.DataFrame, user: Dict) -> None:
             st.error("Informe a NF de recebimento.")
             return
 
-        for label in selected_labels:
-            row = lote_df[lote_df["label_lote"] == label].iloc[0]
+        selected_rows = lote_df[lote_df["label_lote"].isin(selected_labels)].copy()
+        if selected_rows.empty:
+            st.error("Nenhum item válido foi encontrado.")
+            return
+
+        now = now_br()
+        updates = []
+        logs = []
+
+        for _, row in selected_rows.iterrows():
             req_id = safe_str(row["id_requisicao"])
-            row_n = find_row_number_by_id(sh, "requisicoes", "id_requisicao", req_id)
-            if row_n is None:
+            row_n = int(row.get("_sheet_row_number", 0) or 0)
+            if row_n <= 1:
                 continue
 
             qty_recebida = (
@@ -1210,7 +1391,6 @@ def render_receiving(sh, req_df: pd.DataFrame, user: Dict) -> None:
                 or "0"
             )
 
-            now = now_br()
             payload = {
                 "status": "RECEBIDO",
                 "recebedor": user["usuario"],
@@ -1222,25 +1402,27 @@ def render_receiving(sh, req_df: pd.DataFrame, user: Dict) -> None:
             if qtd_total_recebida:
                 payload["quantidade_recebida"] = qty_recebida
 
-            update_row_by_number(
-                sh,
-                "requisicoes",
-                row_n,
-                REQ_COLS,
-                payload,
-            )
-            write_log(
-                sh,
-                user["usuario"],
-                req_id,
-                "receber_em_lote",
-                "COMPRADO",
-                "RECEBIDO",
-                f"NF {nf_lote.strip()} | {obs_lote}",
+            updates.append((row_n, payload, row.to_dict()))
+            logs.append(
+                (
+                    user["usuario"],
+                    req_id,
+                    "receber_em_lote",
+                    "COMPRADO",
+                    "RECEBIDO",
+                    f"NF {nf_lote.strip()} | {obs_lote}",
+                )
             )
 
+        if not updates:
+            st.error("Não foi possível preparar a atualização em lote.")
+            return
+
+        batch_update_rows(sh, "requisicoes", REQ_COLS, updates)
+        write_logs_batch(sh, logs)
+
         clear_caches()
-        st.session_state["flash_message"] = "Recebimento em lote confirmado com sucesso."
+        st.session_state["flash_message"] = f"Recebimento em lote confirmado com sucesso para {len(updates)} item(ns)."
         st.session_state["flash_type"] = "success"
         st.rerun()
 
@@ -1250,42 +1432,37 @@ def render_receiving(sh, req_df: pd.DataFrame, user: Dict) -> None:
     for _, r in df.iloc[::-1].iterrows():
         request_card(r, "Confirme o recebimento abaixo")
 
-        try:
-            qtd_default = float(
-                str(
-                    safe_str(r["quantidade_aprovada"])
-                    or safe_str(r["quantidade_solicitada"])
-                    or "0"
-                ).replace(",", ".")
-            )
-        except Exception:
-            qtd_default = 0.0
-
-        c1, c2 = st.columns(2)
-        qtd = c1.number_input(
-            "Qtd. recebida",
-            min_value=0.0,
-            value=qtd_default,
-            key=f"rec_qtd_{r['id_requisicao']}",
+        qtd_default = safe_float(
+            safe_str(r["quantidade_aprovada"]) or safe_str(r["quantidade_solicitada"]) or "0",
+            default=0.0,
         )
-        nf = c2.text_input("NF de recebimento", key=f"rec_nf_{r['id_requisicao']}")
 
-        obs = st.text_input("Obs. recebimento", key=f"rec_obs_{r['id_requisicao']}")
+        form_key = f"receive_form_{r['id_requisicao']}"
+        with st.form(form_key):
+            c1, c2 = st.columns(2)
+            qtd = c1.number_input(
+                "Qtd. recebida",
+                min_value=0.0,
+                value=qtd_default,
+                key=f"rec_qtd_{r['id_requisicao']}",
+            )
+            nf = c2.text_input("NF de recebimento", key=f"rec_nf_{r['id_requisicao']}")
 
-        if st.button(
-            "Confirmar recebimento",
-            key=f"rec_btn_{r['id_requisicao']}",
-            type="primary",
-            use_container_width=True,
-        ):
+            obs = st.text_input("Obs. recebimento", key=f"rec_obs_{r['id_requisicao']}")
+
+            confirm = st.form_submit_button(
+                "Confirmar recebimento",
+                type="primary",
+                use_container_width=True,
+            )
+
+        if confirm:
             if not nf.strip():
                 st.error("Informe a NF de recebimento.")
                 return
 
-            row_n = find_row_number_by_id(
-                sh, "requisicoes", "id_requisicao", safe_str(r["id_requisicao"])
-            )
-            if row_n is None:
+            row_n = int(r.get("_sheet_row_number", 0) or 0)
+            if row_n <= 1:
                 st.error("Requisição não encontrada.")
                 return
 
@@ -1304,6 +1481,7 @@ def render_receiving(sh, req_df: pd.DataFrame, user: Dict) -> None:
                     "nf_recebimento": nf.strip(),
                     "ultima_atualizacao": fmt_dt(now),
                 },
+                current_row=r.to_dict(),
             )
             write_log(
                 sh,
@@ -1386,15 +1564,164 @@ def render_panel(req_df: pd.DataFrame, user: Dict) -> None:
         request_card(r)
 
 
+def render_registry(sh, itens_df: pd.DataFrame, forn_df: pd.DataFrame, user: Dict) -> None:
+    if not (can_manage_items(user) or can_manage_suppliers(user)):
+        st.info("Seu perfil não possui acesso aos cadastros.")
+        return
+
+    st.subheader("Cadastros")
+    show_flash()
+
+    tabs = []
+    tab_names = []
+    if can_manage_items(user):
+        tab_names.append("Novo item")
+    if can_manage_suppliers(user):
+        tab_names.append("Novo fornecedor")
+    tab_names.append("Consulta")
+
+    tabs = st.tabs(tab_names)
+    idx = 0
+
+    if can_manage_items(user):
+        with tabs[idx]:
+            st.markdown("### Cadastro de novo item")
+            with st.form("novo_item_form"):
+                c1, c2 = st.columns(2)
+                cod_item = c1.text_input("Código do item", value=get_next_item_code(itens_df))
+                produto = c2.text_input("Produto")
+
+                c3, c4 = st.columns(2)
+                categoria = c3.text_input("Categoria")
+                unidade = c4.text_input("Unidade")
+
+                fornecedores_opcoes = sorted([x for x in forn_df["fornecedor"].astype(str).tolist() if x])
+                fornecedor_principal = st.selectbox(
+                    "Fornecedor principal",
+                    [""] + fornecedores_opcoes,
+                )
+
+                c5, c6 = st.columns(2)
+                contato_fornecedor = c5.text_input("Contato do fornecedor")
+                preco_referencia = c6.text_input("Preço de referência")
+
+                c7, c8 = st.columns(2)
+                estoque_minimo = c7.text_input("Estoque mínimo")
+                ativo = c8.selectbox("Ativo", ["SIM", "NAO"])
+
+                observacao = st.text_area("Observação")
+
+                save_item = st.form_submit_button(
+                    "Cadastrar item",
+                    type="primary",
+                    use_container_width=True,
+                )
+
+            if save_item:
+                if not cod_item.strip() or not produto.strip():
+                    st.error("Código e produto são obrigatórios.")
+                elif (itens_df["cod_item"].astype(str).str.strip().str.upper() == cod_item.strip().upper()).any():
+                    st.error("Já existe um item com esse código.")
+                else:
+                    append_row(
+                        sh,
+                        "itens",
+                        [
+                            cod_item.strip(),
+                            produto.strip(),
+                            categoria.strip(),
+                            unidade.strip(),
+                            fornecedor_principal.strip(),
+                            contato_fornecedor.strip(),
+                            preco_referencia.strip(),
+                            estoque_minimo.strip(),
+                            ativo,
+                            observacao.strip(),
+                        ],
+                    )
+                    clear_caches()
+                    st.session_state["flash_message"] = "Item cadastrado com sucesso."
+                    st.session_state["flash_type"] = "success"
+                    st.rerun()
+        idx += 1
+
+    if can_manage_suppliers(user):
+        with tabs[idx]:
+            st.markdown("### Cadastro de novo fornecedor")
+            with st.form("novo_fornecedor_form"):
+                fornecedor = st.text_input("Fornecedor")
+                c1, c2 = st.columns(2)
+                categoria_principal = c1.text_input("Categoria principal")
+                contato = c2.text_input("Contato")
+
+                c3, c4 = st.columns(2)
+                telefone = c3.text_input("Telefone")
+                email = c4.text_input("Email")
+
+                c5, c6 = st.columns(2)
+                prazo_medio_dias = c5.text_input("Prazo médio em dias")
+                ativo = c6.selectbox("Ativo ", ["SIM", "NAO"])
+
+                observacao = st.text_area("Observação ")
+
+                save_supplier = st.form_submit_button(
+                    "Cadastrar fornecedor",
+                    type="primary",
+                    use_container_width=True,
+                )
+
+            if save_supplier:
+                if not fornecedor.strip():
+                    st.error("Fornecedor é obrigatório.")
+                elif (forn_df["fornecedor"].astype(str).str.strip().str.upper() == fornecedor.strip().upper()).any():
+                    st.error("Esse fornecedor já existe.")
+                else:
+                    append_row(
+                        sh,
+                        "fornecedores",
+                        [
+                            fornecedor.strip(),
+                            categoria_principal.strip(),
+                            contato.strip(),
+                            telefone.strip(),
+                            email.strip(),
+                            prazo_medio_dias.strip(),
+                            ativo.strip(),
+                            observacao.strip(),
+                        ],
+                    )
+                    clear_caches()
+                    st.session_state["flash_message"] = "Fornecedor cadastrado com sucesso."
+                    st.session_state["flash_type"] = "success"
+                    st.rerun()
+        idx += 1
+
+    with tabs[idx]:
+        c1, c2 = st.columns(2)
+        if can_manage_items(user):
+            with c1:
+                st.markdown("### Itens cadastrados")
+                st.dataframe(itens_df, use_container_width=True, hide_index=True)
+        if can_manage_suppliers(user):
+            with c2:
+                st.markdown("### Fornecedores cadastrados")
+                st.dataframe(forn_df, use_container_width=True, hide_index=True)
+
+
 def render_admin(
-    sh, itens_df: pd.DataFrame, users_df: pd.DataFrame, req_df: pd.DataFrame, user: Dict
+    sh,
+    itens_df: pd.DataFrame,
+    users_df: pd.DataFrame,
+    req_df: pd.DataFrame,
+    forn_df: pd.DataFrame,
+    user: Dict,
 ) -> None:
     if not has_profile(user, "admin"):
         st.info("Acesso exclusivo do administrador.")
         return
 
     st.subheader("Admin")
-    tabs = st.tabs(["Novo usuário", "Usuários", "Itens", "Exportação"])
+    tabs = st.tabs(["Novo usuário", "Usuários", "Itens", "Fornecedores", "Exportação"])
 
     with tabs[0]:
         with st.form("novo_usuario"):
@@ -1403,7 +1730,11 @@ def render_admin(
             nome = c2.text_input("Nome")
             c3, c4 = st.columns(2)
             senha = c3.text_input("Senha")
-            perfil = c4.text_input("Perfis", value="solicitante")
+            perfil = c4.text_input(
+                "Perfis",
+                value="solicitante",
+                help="Ex.: solicitante;aprovador;compras;recebimento;cadastro_itens;cadastro_fornecedores;admin",
+            )
             c5, c6 = st.columns(2)
             setor = c5.text_input("Setor")
             ativo = c6.selectbox("Ativo", ["SIM", "NAO"])
@@ -1430,10 +1761,13 @@ def render_admin(
         st.dataframe(users_df, use_container_width=True, hide_index=True)
 
     with tabs[2]:
-        st.dataframe(itens_df.head(300), use_container_width=True, hide_index=True)
+        st.dataframe(itens_df, use_container_width=True, hide_index=True)
 
     with tabs[3]:
-        c1, c2 = st.columns(2)
+        st.dataframe(forn_df, use_container_width=True, hide_index=True)
+
+    with tabs[4]:
+        c1, c2, c3 = st.columns(3)
         c1.download_button(
             "Baixar requisições CSV",
             data=req_df.to_csv(index=False).encode("utf-8"),
@@ -1445,6 +1779,13 @@ def render_admin(
             "Baixar itens CSV",
             data=itens_df.to_csv(index=False).encode("utf-8"),
             file_name="itens_yvora.csv",
+            mime="text/csv",
+            use_container_width=True,
+        )
+        c3.download_button(
+            "Baixar fornecedores CSV",
+            data=forn_df.to_csv(index=False).encode("utf-8"),
+            file_name="fornecedores_yvora.csv",
             mime="text/csv",
             use_container_width=True,
         )
@@ -1494,11 +1835,11 @@ def main() -> None:
 
     try:
         sh = get_gsheet()
-        itens_df, users_df, req_df, _, _ = load_data_cached()
+        itens_df, users_df, req_df, forn_df, _ = load_data_cached()
     except Exception as e:
         st.error(f"Falha ao conectar no Google Sheets: {e}")
         st.info(
-            "Esta versão usa cache para reduzir leituras. Se o erro persistir, aguarde alguns segundos e recarregue."
+            "Esta versão usa menos leituras e menos chamadas por ação. Se houver oscilação no Google Sheets, recarregue em alguns segundos."
         )
         return
 
@@ -1520,12 +1861,15 @@ def main() -> None:
     logout_button(cookies)
 
     menu = ["Início", "Nova requisição", "Minhas requisições", "Painel"]
+
     if can_any(user, ["aprovador", "admin"]):
         menu.append("Aprovações")
     if can_any(user, ["compras", "admin"]):
         menu.append("Compras")
     if can_any(user, ["recebimento", "admin"]):
         menu.append("Recebimento")
+    if can_manage_items(user) or can_manage_suppliers(user):
+        menu.append("Cadastros")
     if has_profile(user, "admin"):
         menu.append("Admin")
 
@@ -1547,8 +1891,10 @@ def main() -> None:
         render_buying(sh, req_df, user)
     elif selected == "Recebimento":
         render_receiving(sh, req_df, user)
+    elif selected == "Cadastros":
+        render_registry(sh, itens_df, forn_df, user)
     elif selected == "Admin":
-        render_admin(sh, itens_df, users_df, req_df, user)
+        render_admin(sh, itens_df, users_df, req_df, forn_df, user)
 
 
 if __name__ == "__main__":
