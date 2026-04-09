@@ -1895,7 +1895,6 @@ def main() -> None:
         render_registry(sh, itens_df, forn_df, user)
     elif selected == "Admin":
         render_admin(sh, itens_df, users_df, req_df, forn_df, user)
-
-
+        
 if __name__ == "__main__":
     main()
