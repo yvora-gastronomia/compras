@@ -27,6 +27,7 @@ DEFAULT_SPREADSHEET_ID = "19CH28p4VI4iFv9mRPnRPBMW1MHTqdW0-ZQhghC2_nrk"
 COOKIE_PASSWORD = "yvora_requisicoes_cookie_2026"
 COOKIE_NAME_USER = "yv_user_login"
 COOKIE_NAME_EXP = "yv_user_exp"
+LOGIN_CACHE_DAYS = 7
 
 REQUIRED_SHEETS = [
     "itens",
@@ -178,6 +179,14 @@ def safe_float(x, default: float = 0.0) -> float:
             return float(str(x).replace(",", "."))
         except Exception:
             return default
+
+
+def col_letter(col_num: int) -> str:
+    result = ""
+    while col_num > 0:
+        col_num, remainder = divmod(col_num - 1, 26)
+        result = chr(65 + remainder) + result
+    return result
 
 
 def show_flash() -> None:
@@ -429,7 +438,7 @@ def kpi_box(label: str, value: str) -> None:
 
 
 def save_login_cookie(cookies, user: Dict) -> None:
-    exp = datetime.now() + timedelta(hours=48)
+    exp = datetime.now() + timedelta(days=LOGIN_CACHE_DAYS)
     cookies[COOKIE_NAME_USER] = user.get("usuario", "")
     cookies[COOKIE_NAME_EXP] = exp.isoformat()
     cookies.save()
@@ -453,6 +462,7 @@ def try_restore_login_from_cookie(cookies, users_df: pd.DataFrame) -> Optional[D
     try:
         exp = datetime.fromisoformat(exp_str)
     except Exception:
+        clear_login_cookie(cookies)
         return None
 
     if datetime.now() > exp:
@@ -460,7 +470,8 @@ def try_restore_login_from_cookie(cookies, users_df: pd.DataFrame) -> Optional[D
         return None
 
     match = users_df[
-        users_df["usuario"].astype(str).str.strip() == str(usuario).strip()
+        (users_df["usuario"].astype(str).str.strip() == str(usuario).strip())
+        & (users_df["ativo"].astype(str).str.upper().ne("NAO"))
     ]
     if match.empty:
         clear_login_cookie(cookies)
@@ -655,6 +666,7 @@ def batch_update_rows(
         merged = {}
         if current_row:
             merged.update({h: safe_str(current_row.get(h, "")) for h in headers})
+
         for header in headers:
             if header in data:
                 merged[header] = data[header]
@@ -662,7 +674,8 @@ def batch_update_rows(
                 merged[header] = ""
 
         values = [merged.get(h, "") for h in headers]
-        last_col = chr(ord("A") + len(headers) - 1)
+        last_col = col_letter(len(headers))
+
         batch_payload.append(
             {
                 "range": f"A{row_number}:{last_col}{row_number}",
@@ -671,15 +684,16 @@ def batch_update_rows(
         )
 
     def _run():
-        if hasattr(ws, "batch_update"):
+        try:
             return ws.batch_update(batch_payload, value_input_option="USER_ENTERED")
-        for item in batch_payload:
-            ws.update(
-                range_name=item["range"],
-                values=item["values"],
-                value_input_option="USER_ENTERED",
-            )
-        return None
+        except TypeError:
+            for item in batch_payload:
+                ws.update(
+                    range_name=item["range"],
+                    values=item["values"],
+                    value_input_option="USER_ENTERED",
+                )
+            return None
 
     api_retry(_run)
 
@@ -1572,7 +1586,6 @@ def render_registry(sh, itens_df: pd.DataFrame, forn_df: pd.DataFrame, user: Dic
     st.subheader("Cadastros")
     show_flash()
 
-    tabs = []
     tab_names = []
     if can_manage_items(user):
         tab_names.append("Novo item")
@@ -1794,6 +1807,8 @@ def render_admin(
 def login_screen(users_df: pd.DataFrame, cookies) -> None:
     st.markdown("<div class='login-wrap'>", unsafe_allow_html=True)
     st.subheader("Acesso")
+    st.caption(f"Após o login, o acesso fica validado neste dispositivo por {LOGIN_CACHE_DAYS} dias.")
+
     with st.form("login"):
         usuario = st.text_input("Usuário")
         senha = st.text_input("Senha", type="password")
@@ -1806,7 +1821,7 @@ def login_screen(users_df: pd.DataFrame, cookies) -> None:
         else:
             st.session_state["yv_user"] = user
             save_login_cookie(cookies, user)
-            st.session_state["flash_message"] = "Login realizado com sucesso."
+            st.session_state["flash_message"] = f"Login realizado com sucesso. Este dispositivo ficará autenticado por {LOGIN_CACHE_DAYS} dias."
             st.session_state["flash_type"] = "success"
             st.rerun()
 
@@ -1858,6 +1873,7 @@ def main() -> None:
 
     st.sidebar.success(user.get("nome", user["usuario"]))
     st.sidebar.caption(" | ".join(user.get("profiles", [])) or "sem perfil")
+    st.sidebar.caption(f"Login válido neste dispositivo por até {LOGIN_CACHE_DAYS} dias")
     logout_button(cookies)
 
     menu = ["Início", "Nova requisição", "Minhas requisições", "Painel"]
@@ -1895,6 +1911,7 @@ def main() -> None:
         render_registry(sh, itens_df, forn_df, user)
     elif selected == "Admin":
         render_admin(sh, itens_df, users_df, req_df, forn_df, user)
-        
+
+
 if __name__ == "__main__":
     main()
