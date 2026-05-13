@@ -482,7 +482,7 @@ def try_restore_login_from_cookie(cookies, users_df: pd.DataFrame) -> Optional[D
     return row
 
 
-def api_retry(func, retries: int = 3, wait_seconds: float = 1.0):
+def api_retry(func, retries: int = 4, wait_seconds: float = 1.2):
     last_error = None
     for attempt in range(retries):
         try:
@@ -780,6 +780,34 @@ def write_logs_batch(
     append_rows(sh, "log_alteracoes", rows)
 
 
+def safe_write_log(
+    sh,
+    usuario: str,
+    req_id: str,
+    acao: str,
+    anterior: str,
+    novo: str,
+    obs: str,
+) -> None:
+    try:
+        write_log(sh, usuario, req_id, acao, anterior, novo, obs)
+    except Exception as e:
+        print(
+            f"[LOG_ERROR] usuario={usuario} "
+            f"req_id={req_id} acao={acao} erro={repr(e)}"
+        )
+
+
+def safe_write_logs_batch(
+    sh,
+    logs: List[Tuple[str, str, str, str, str, str]],
+) -> None:
+    try:
+        write_logs_batch(sh, logs)
+    except Exception as e:
+        print(f"[LOG_BATCH_ERROR] qtd_logs={len(logs)} erro={repr(e)}")
+
+
 def authenticate(users_df: pd.DataFrame, usuario: str, senha: str) -> Optional[Dict]:
     match = users_df[
         (users_df["usuario"].astype(str).str.strip() == usuario.strip())
@@ -993,7 +1021,7 @@ def render_new_request(
             ],
         )
 
-        write_log(
+        safe_write_log(
             sh,
             user["usuario"],
             req_id,
@@ -1028,7 +1056,7 @@ def cancel_my_request(sh, req_df: pd.DataFrame, req_id: str, user: Dict) -> None
         },
         current_row=current,
     )
-    write_log(
+    safe_write_log(
         sh,
         user["usuario"],
         req_id,
@@ -1158,7 +1186,7 @@ def render_approvals(sh, req_df: pd.DataFrame, user: Dict) -> None:
                 },
                 current_row=r.to_dict(),
             )
-            write_log(
+            safe_write_log(
                 sh,
                 user["usuario"],
                 safe_str(r["id_requisicao"]),
@@ -1197,7 +1225,7 @@ def render_approvals(sh, req_df: pd.DataFrame, user: Dict) -> None:
                 },
                 current_row=r.to_dict(),
             )
-            write_log(
+            safe_write_log(
                 sh,
                 user["usuario"],
                 safe_str(r["id_requisicao"]),
@@ -1295,7 +1323,7 @@ def render_buying(sh, req_df: pd.DataFrame, user: Dict) -> None:
                 },
                 current_row=r.to_dict(),
             )
-            write_log(
+            safe_write_log(
                 sh,
                 user["usuario"],
                 safe_str(r["id_requisicao"]),
@@ -1433,7 +1461,7 @@ def render_receiving(sh, req_df: pd.DataFrame, user: Dict) -> None:
             return
 
         batch_update_rows(sh, "requisicoes", REQ_COLS, updates)
-        write_logs_batch(sh, logs)
+        safe_write_logs_batch(sh, logs)
 
         clear_caches()
         st.session_state["flash_message"] = f"Recebimento em lote confirmado com sucesso para {len(updates)} item(ns)."
@@ -1497,7 +1525,7 @@ def render_receiving(sh, req_df: pd.DataFrame, user: Dict) -> None:
                 },
                 current_row=r.to_dict(),
             )
-            write_log(
+            safe_write_log(
                 sh,
                 user["usuario"],
                 safe_str(r["id_requisicao"]),
